@@ -1,0 +1,13 @@
+{
+  "start_year": 2010,
+  "end_year": 2026,
+  "training_end_year": 2020,
+  "engineering_min_share_of_physical": 0.25,
+  "total": 1000000,
+  "batch_size": 50000,
+  "seed": 20260916,
+  "workers": 4,
+  "requests_per_second": 5,
+  "epsilon": 1e-8,
+  "data_dir": "data"
+}
