@@ -1,6 +1,5 @@
 .env
 .venv/
 __pycache__/
-data/
-*.log
-data.zip
+download_dataset/data/
+*.logdata.zip
