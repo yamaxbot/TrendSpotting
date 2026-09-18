@@ -1,11 +1,16 @@
-from collections import Counter
-
-
 def discover_topics(works):
-    topics = Counter()
+    topics = {}
 
     for work in works:
         for topic in work.get("topics", []):
-            topics[topic["display_name"]] += 1
+            name = topic["display_name"]
+
+            if name not in topics:
+                topics[name] = {
+                    "id": topic["id"],
+                    "frequency": 0
+                }
+
+            topics[name]["frequency"] += 1
 
     return topics

@@ -1,6 +1,6 @@
 # On-Demand Parsing
 
-Модуль отвечает за сбор научных публикаций по произвольному запросу пользователя через OpenAlex.
+Модуль отвечает за динамический сбор научных публикаций по произвольному технологическому запросу пользователя через OpenAlex.
 
 ## Pipeline
 
@@ -21,7 +21,11 @@ Topic Expansion
     ↓
 Main Collection
     ↓
-Cleaning
+Exploration
+    ↓
+Normalization + Deduplication
+    ↓
+Relevance Filtering
     ↓
 Clean Corpus
 ```
@@ -29,13 +33,17 @@ Clean Corpus
 ## Файлы
 
 ### `parser.py`
-Главная точка входа. Последовательно запускает все этапы парсинга. Запускать нужно только этот файл.
+Главная точка входа.
+
+Последовательно запускает весь parsing pipeline. Остальные модули содержат отдельные функции и используются через `parser.py`.
 
 ### `query_normalizer.py`
-Нормализует запрос пользователя через LLM:
-- переводит на английский;
-- убирает слова вроде «найди», «перспективные», «слабые сигналы»;
-- оставляет только предметную область и важные ограничения.
+Нормализует пользовательский запрос через LLM (KIE API).
+
+- переводит запрос на английский;
+- удаляет пользовательское намерение;
+- сохраняет предметную область и ограничения;
+- не генерирует названия технологий.
 
 Пример:
 
@@ -45,30 +53,77 @@ Clean Corpus
 ```
 
 ### `request_validation.py`
-Проверяет подключение к KIE API и получает текущий баланс аккаунта. Используется для диагностики API.
+Проверяет доступность KIE API и текущий баланс аккаунта. Используется для диагностики.
 
 ### `openalex_client.py`
-Работает с OpenAlex API. Выполняет поиск публикаций и cursor pagination.
+Клиент OpenAlex API.
 
-Сейчас используется для получения `1000 Seed Works`.
+Реализовано:
+
+- текстовый поиск публикаций;
+- cursor pagination;
+- получение Seed Works;
+- получение публикаций по OpenAlex Topic ID.
+
+Используется как для Seed Search, так и для Topic Expansion.
 
 ### `topic_discovery.py`
-Извлекает OpenAlex Topics из Seed Works и считает их частоту (`frequency`).
+Извлекает Topics из Seed Works.
+
+Для каждого Topic сохраняются:
 
 ```text
-1000 Seed Works
-→ 266 Unique Topics
+id
+name
+frequency
 ```
 
+`frequency` показывает, в скольких Seed Works встретился Topic.
+
 ### `topic_scoring.py`
-Оценивает найденные Topics.
+Оценивает и выбирает Topics для расширения поиска.
 
-Используются:
-- `similarity` — семантическая близость Topic к запросу;
-- `frequency` — количество Seed Works с этим Topic;
-- `coverage` — `frequency / seed_size`.
+Для каждого Topic рассчитываются:
 
-На основе этих показателей выполняется baseline Topic Selection (`CORE / NICHE / SUPPORTED`).
+- `similarity` — semantic similarity с запросом пользователя;
+- `frequency` — количество Seed Works с Topic;
+- `coverage` — доля Topic в Seed Corpus.
+
+Для embeddings используется:
+
+```text
+sentence-transformers/all-MiniLM-L6-v2
+```
+
+Текущий baseline Topic Selection использует правила:
+
+```text
+CORE
+NICHE
+SUPPORTED
+```
+
+на основе `similarity` и `frequency / coverage`.
+
+## Topic Expansion
+
+После Topic Selection используются OpenAlex Topic ID для получения дополнительных публикаций.
+
+```text
+Selected Topics
+      ↓
+Topic IDs
+      ↓
+OpenAlex /works
+      ↓
+Works по каждому Topic
+```
+
+Это позволяет находить релевантные публикации, даже если они напрямую не содержат исходный запрос пользователя.
+
+Topic Expansion протестирован на нескольких направлениях и корректно получает публикации по выбранным Topics.
+
+---
 
 ## Текущий статус
 
@@ -78,20 +133,149 @@ Clean Corpus
 [✓] Topic Discovery
 [✓] Topic Scoring
 [✓] Baseline Topic Selection
+[✓] Topic Expansion
 
-[ ] Topic Expansion
 [ ] Main Collection
-[ ] Exploration Search
+[ ] Exploration
 [ ] Normalization
 [ ] Deduplication
 [ ] Relevance Filtering
 [ ] Clean Corpus
 ```
 
-## Что доработать
+## Что нужно добавить
 
-1. **Topic Selection** — добавить co-occurrence между Topics, чтобы не терять редкие релевантные направления.
-2. **Topic Expansion** — получать дополнительные публикации по выбранным Topics.
-3. **Exploration** — часть корпуса собирать широким поиском независимо от выбранных Topics.
-4. **Cleaning** — нормализация данных, удаление дублей и нерелевантных публикаций.
-5. **Export** — сохранение RAW данных и итогового Clean Corpus.
+### 1. Main Collection
+
+Сформировать основной корпус публикаций из Selected Topics.
+
+Нужно определить:
+
+- общий лимит публикаций;
+- распределение лимита между Topics;
+- распределение по годам;
+- защиту от перекоса в крупные Topics.
+
+Целевой baseline:
+
+```text
+~20 000–30 000 works
+```
+
+### 2. Exploration
+
+Часть корпуса получать широким поиском по исходному запросу независимо от Selected Topics.
+
+Baseline:
+
+```text
+80% → Topic-based collection
+20% → Exploration
+```
+
+Это снижает риск потери новых направлений из-за ошибок Topic Selection или ограничений OpenAlex Topics.
+
+### 3. Normalization
+
+Привести OpenAlex Works к единой структуре:
+
+```text
+openalex_id
+doi
+title
+abstract
+publication_date
+publication_year
+topics
+keywords
+authors
+institutions
+cited_by_count
+source
+language
+type
+```
+
+### 4. Deduplication
+
+После объединения Seed Search, Topic Expansion и Exploration удалить повторяющиеся публикации.
+
+Основные идентификаторы:
+
+```text
+OpenAlex ID
+DOI
+```
+
+### 5. Relevance Filtering
+
+Удалить публикации, которые попали в корпус из-за слишком широкого Topic/Search.
+
+Планируется semantic filtering относительно исходного запроса пользователя.
+
+### 6. Clean Corpus
+
+После очистки сформировать итоговый корпус для ML/NLP анализа слабых сигналов.
+
+```text
+OpenAlex
+   ↓
+RAW Works
+   ↓
+Normalization
+   ↓
+Deduplication
+   ↓
+Relevance Filtering
+   ↓
+CLEAN CORPUS
+```
+
+## Планируемые улучшения
+
+### Topic Selection
+Текущий `similarity + frequency/coverage` является baseline.
+
+В дальнейшем добавить Topic co-occurrence:
+
+```text
+Topic
+├── similarity
+├── frequency / coverage
+└── co-occurrence / core_ratio
+```
+
+Это позволит лучше находить редкие, но связанные направления и уменьшить количество случайных Topics.
+
+### Query Normalization
+Добавить проверку, что результат нормализации действительно получен на английском языке.
+
+Например:
+
+```text
+"ии" → "artificial intelligence"
+```
+
+а не:
+
+```text
+"ии" → "ии"
+```
+
+---
+
+## Итоговая цель
+
+Результатом `on_demand_parsing` является не список слабых сигналов, а очищенный корпус публикаций:
+
+```text
+User Query
+    ↓
+On-Demand Parsing
+    ↓
+Clean Corpus
+    ↓
+Weak Signal Analysis
+    ↓
+TOP-15 Weak Signals
+```

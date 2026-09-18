@@ -8,12 +8,20 @@ API_URL = "https://api.kie.ai/gpt-5-2/v1/chat/completions"
 API_KEY = os.getenv("KIE_API_KEY")
 
 PROMPT = """
-Convert the request into a concise English OpenAlex search query.
-Keep only the scientific/technological subject and important constraints.
-Remove user intent such as find, show, topics about, new, promising,
-emerging, weak signals.
-Do not invent or add technologies.
-Return ONLY the query.
+Convert the user's request into a concise English search query for OpenAlex.
+
+Rules:
+- The output MUST be in English.
+- Translate Russian and other languages into English.
+- Keep only the scientific or technological subject and important constraints.
+- Remove intent words such as find, show, new, promising, emerging, weak signals, topics about.
+- Do not invent or add technologies.
+- Return ONLY the final English query.
+
+Examples:
+"ии" -> "artificial intelligence"
+"кибербезопасность" -> "cybersecurity"
+"новые технологии в робототехнике" -> "robotics"
 """
 
 

@@ -22,8 +22,9 @@ def score_topics(query, topics):
 
     for name, similarity in zip(names, similarities):
         result.append({
+            "id": topics[name]["id"],
             "name": name,
-            "frequency": topics[name],
+            "frequency": topics[name]["frequency"],
             "similarity": similarity.item()
         })
 
