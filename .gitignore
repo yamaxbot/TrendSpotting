@@ -3,3 +3,4 @@
 __pycache__/
 download_dataset/data/
 *.logdata.zip
+on_demand_parsing/data
