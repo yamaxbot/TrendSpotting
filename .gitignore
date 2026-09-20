@@ -27,3 +27,4 @@ on_demand_parsing/data
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+education/catboost_info
