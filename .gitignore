@@ -1,6 +1,29 @@
 .env
 .venv/
 __pycache__/
+
+# Local datasets, generated features, caches, and pipeline state.
+data/
 download_dataset/data/
+*.parquet
+*.parquet.tmp
+*.feather
+*.arrow
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Logs and compressed local data archives.
+*.log
 *.logdata.zip
 on_demand_parsing/data
+*.zip
+
+# Python and tool caches.
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
