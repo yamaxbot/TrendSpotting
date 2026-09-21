@@ -2,7 +2,7 @@ from collections import defaultdict
 import json
 import numpy as np
 import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.neighbors import NearestNeighbors
 
 
@@ -134,7 +134,7 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
 
 
 def calc_author_growth_fast(df: pd.DataFrame) -> pd.Series:
-    """Расчет author_growth_rate без преобразования таблицы через explode."""
+    """Calculate author growth from the two strictly preceding years."""
     print("[INFO] Расчет показателя динамики авторского состава.")
 
     # Используются только колонки, необходимые для расчета показателя.
@@ -143,7 +143,7 @@ def calc_author_growth_fast(df: pd.DataFrame) -> pd.Series:
         subset=["primary_topic_id", "pub_year"]
     )
 
-    # Множества авторов агрегируются по теме и году без формирования промежуточной таблицы.
+    # Future rows cannot contribute because each lookup is explicitly y-1/y-2.
     topic_year_authors = defaultdict(set)
 
     for top_id, y, auths in zip(
@@ -152,19 +152,17 @@ def calc_author_growth_fast(df: pd.DataFrame) -> pd.Series:
         # Добавляем айдишники авторов в сет соответствующего (topic, year)
         topic_year_authors[(top_id, int(y))].update(extract_author_ids(auths))
 
-    # Формируется таблица количества уникальных авторов по теме и году.
     topic_year_counts = {
         key: len(auth_set) for key, auth_set in topic_year_authors.items()
     }
 
-    # Показатель рассчитывается итеративно, чтобы избежать преобразования
-    # всей таблицы в object-массив.
     result = np.zeros(len(df), dtype=np.float32)
     for idx, (top_id, y) in enumerate(zip(df["primary_topic_id"], df["pub_year"])):
         if pd.isna(top_id) or pd.isna(y):
             continue
         y = int(y)
 
+        # Only information available before the prediction year is allowed.
         a1 = topic_year_counts.get((top_id, y - 1), 0)
         a2 = topic_year_counts.get((top_id, y - 2), 0)
 
@@ -176,86 +174,150 @@ def calc_author_growth_fast(df: pd.DataFrame) -> pd.Series:
     return pd.Series(result, index=df.index, dtype=np.float32)
 
 
-def calculate_sample_graph_features(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Calculate PPMI and venue-diversity proxies from links inside this corpus."""
-    print("[INFO] Расчет выборочных показателей PPMI и разнообразия источников.")
+def _parse_list(value) -> list:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return []
+    return list(value) if isinstance(value, (list, tuple, np.ndarray)) else []
 
-    document_domain = dict(zip(df["doc_id"], df["domain_id"]))
-    document_source = dict(zip(df["doc_id"], df["source_id"]))
+
+def calculate_temporal_text_features(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Build fast point-in-time text features with cumulative topic centroids."""
+    print("[INFO] Расчет быстрых временных текстовых признаков без будущих документов.")
+    years = pd.to_numeric(df["pub_year"], errors="coerce")
+    abstracts = df["abstract_text"].fillna("").astype(str)
+    novelty = np.ones(len(df), dtype=np.float32)
+    density = np.zeros(len(df), dtype=np.float32)
+
+    # Hashing has a fixed vocabulary and needs no fit, so future documents never
+    # influence the representation of earlier documents.
+    vectorizer = HashingVectorizer(
+        n_features=2000,
+        stop_words="english",
+        alternate_sign=False,
+        norm="l2",
+        dtype=np.float32,
+    )
+    text_matrix = vectorizer.transform(abstracts)
+    topic_values = df["primary_topic_id"].fillna("unknown").astype(str).to_numpy()
+    year_values = years.to_numpy()
+    topic_sums: dict[str, np.ndarray] = {}
+    topic_counts: defaultdict[str, int] = defaultdict(int)
+
+    for year in sorted(years.dropna().astype(int).unique()):
+        current_indices = np.flatnonzero(year_values == year)
+        current_topics, current_topic_indices = np.unique(
+            topic_values[current_indices], return_inverse=True
+        )
+        for topic_index, topic in enumerate(current_topics):
+            selected_indices = current_indices[current_topic_indices == topic_index]
+            count = topic_counts[topic]
+            rows = text_matrix[selected_indices]
+            if count:
+                centroid = topic_sums[topic] / count
+                centroid_norm = np.linalg.norm(centroid)
+                if centroid_norm:
+                    similarities = np.asarray(
+                        rows @ (centroid / centroid_norm)
+                    ).ravel()
+                    novelty[selected_indices] = 1.0 - similarities.astype(np.float32)
+                density[selected_indices] = np.float32(np.dot(centroid, centroid))
+
+            topic_sum = np.asarray(rows.sum(axis=0)).ravel().astype(np.float32)
+            if topic not in topic_sums:
+                topic_sums[topic] = np.zeros(text_matrix.shape[1], dtype=np.float32)
+            topic_sums[topic] += topic_sum
+            topic_counts[topic] += len(selected_indices)
+
+    return (
+        pd.Series(novelty, index=df.index, dtype=np.float32),
+        pd.Series(density, index=df.index, dtype=np.float32),
+    )
+
+
+def calculate_temporal_graph_features(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Calculate graph features using only the graph known by each year."""
+    print("[INFO] Расчет временных PPMI и разнообразия источников.")
+    years = pd.to_numeric(df["pub_year"], errors="coerce")
+    document_info = {
+        str(doc_id): (year, domain, source)
+        for doc_id, year, domain, source in zip(
+            df["doc_id"], years, df["domain_id"], df["source_id"]
+        )
+        if pd.notna(year)
+    }
+    references_by_index = [_parse_list(value) for value in df["referenced_works_ids"]]
+    ppmi = np.zeros(len(df), dtype=np.float32)
+    venue = np.zeros(len(df), dtype=np.float32)
     topic_domain_counts = defaultdict(int)
     topic_counts = defaultdict(int)
     domain_counts = defaultdict(int)
     total_edges = 0
 
-    for topic, references in zip(df["primary_topic_id"], df["referenced_works_ids"]):
-        if isinstance(references, str):
-            try:
-                references = json.loads(references)
-            except (TypeError, json.JSONDecodeError):
-                references = []
-        if not isinstance(references, (list, tuple, np.ndarray)):
-            references = []
+    for year in sorted(years.dropna().astype(int).unique()):
+        current_indices = np.flatnonzero(years.to_numpy() == year)
+        for index in current_indices:
+            topic = df.iloc[index]["primary_topic_id"]
+            if pd.isna(topic):
+                continue
+            topic = str(topic)
+            domains = []
+            sources = []
+            for reference in references_by_index[index]:
+                info = document_info.get(str(reference))
+                if info is None or info[0] >= year:
+                    continue
+                if pd.notna(info[1]):
+                    domains.append(str(info[1]))
+                if pd.notna(info[2]):
+                    sources.append(str(info[2]))
+            if sources:
+                venue[index] = np.float32(len(set(sources)) / len(sources))
+            if total_edges:
+                scores = []
+                for domain in domains:
+                    joint = topic_domain_counts[(topic, domain)] / total_edges
+                    topic_probability = topic_counts[topic] / total_edges
+                    domain_probability = domain_counts[domain] / total_edges
+                    if joint > 0 and topic_probability > 0 and domain_probability > 0:
+                        scores.append(max(0.0, np.log(joint / (topic_probability * domain_probability))))
+                if scores:
+                    ppmi[index] = np.float32(np.mean(scores))
 
-        domains = [document_domain.get(str(reference)) for reference in references]
-        domains = [domain for domain in domains if pd.notna(domain)]
+        for index in current_indices:
+            topic = df.iloc[index]["primary_topic_id"]
+            if pd.isna(topic):
+                continue
+            topic = str(topic)
+            domains = []
+            for reference in references_by_index[index]:
+                info = document_info.get(str(reference))
+                if info is not None and info[0] < year and pd.notna(info[1]):
+                    domains.append(str(info[1]))
+            for domain in domains:
+                topic_domain_counts[(topic, domain)] += 1
+                topic_counts[topic] += 1
+                domain_counts[domain] += 1
+                total_edges += 1
 
-        if pd.isna(topic):
-            continue
-        topic = str(topic)
-        for domain in domains:
-            domain = str(domain)
-            topic_domain_counts[(topic, domain)] += 1
-            topic_counts[topic] += 1
-            domain_counts[domain] += 1
-            total_edges += 1
-
-    ppmi_values = np.zeros(len(df), dtype=np.float32)
-    venue_values = np.zeros(len(df), dtype=np.float32)
-    for index, (topic, references) in enumerate(
-        zip(df["primary_topic_id"], df["referenced_works_ids"])
-    ):
-        if isinstance(references, str):
-            try:
-                references = json.loads(references)
-            except (TypeError, json.JSONDecodeError):
-                references = []
-        if not isinstance(references, (list, tuple, np.ndarray)):
-            references = []
-        domains = [document_domain.get(str(reference)) for reference in references]
-        domains = [domain for domain in domains if pd.notna(domain)]
-
-        if pd.isna(topic) or not domains or not total_edges:
-            continue
-
-        topic = str(topic)
-        scores = []
-        for domain in domains:
-            domain = str(domain)
-            joint = topic_domain_counts[(topic, domain)] / total_edges
-            topic_probability = topic_counts[topic] / total_edges
-            domain_probability = domain_counts[domain] / total_edges
-            if joint and topic_probability and domain_probability:
-                scores.append(max(0.0, np.log(joint / (topic_probability * domain_probability))))
-        if scores:
-            ppmi_values[index] = np.float32(np.mean(scores))
-
-        sources = [document_source.get(str(reference)) for reference in references]
-        sources = [source for source in sources if pd.notna(source)]
-        if sources:
-            venue_values[index] = np.float32(len(set(sources)) / len(sources))
-
-    return (
-        pd.Series(ppmi_values, index=df.index),
-        pd.Series(venue_values, index=df.index),
-    )
+    return pd.Series(ppmi, index=df.index), pd.Series(venue, index=df.index)
 
 
 def calculate_outlier_proxy(df: pd.DataFrame) -> pd.Series:
-    """Flag the top 5% novelty values within each topic as a sample proxy."""
-    topic_thresholds = df.groupby("primary_topic_id")["novelty_raw"].transform(
-        lambda values: values.quantile(0.95)
-    )
-    return (df["novelty_raw"] >= topic_thresholds).astype(np.int8)
+    """Flag novelty using only rows available by each row's publication year."""
+    years = pd.to_numeric(df["pub_year"], errors="coerce")
+    result = np.zeros(len(df), dtype=np.int8)
+    for year in sorted(years.dropna().astype(int).unique()):
+        available = years < year
+        current = years == year
+        thresholds = df.loc[available].groupby("primary_topic_id")["novelty_raw"].quantile(0.95)
+        current_thresholds = df.loc[current, "primary_topic_id"].map(thresholds)
+        result[np.flatnonzero(current)] = (
+            df.loc[current, "novelty_raw"].to_numpy() >= current_thresholds.to_numpy()
+        ).astype(np.int8)
+    return pd.Series(result, index=df.index)
 
 
 def build_real_features(input_parquet_path: str, output_parquet_path: str):
@@ -274,96 +336,17 @@ def build_real_features(input_parquet_path: str, output_parquet_path: str):
     # 1. Расчет динамики авторского состава.
     df["author_growth_rate"] = calc_author_growth_fast(df)
 
-    # 2. Расчет текстовой новизны и тематической плотности через TF-IDF-центроиды.
-    print("[INFO] Расчет текстовой новизны и тематической плотности.")
-    abstracts = (
-        df["abstract_text"].fillna("").astype(str)
-        if "abstract_text" in df.columns
-        else df["title"].fillna("").astype(str)
-    )
-
-    # L2-нормализованный TF-IDF
-    vectorizer = TfidfVectorizer(
-        max_features=2000, stop_words="english", dtype=np.float32
-    )
-    tfidf_matrix = vectorizer.fit_transform(abstracts)
-
-    # Расчет центроида TF-IDF-представлений для каждой темы.
-    df["topic_clean"] = df["primary_topic_id"].fillna("unknown")
-    unique_topics = df["topic_clean"].unique()
-
-    # Считаем средний вектор (центроид) для каждой темы
-    from scipy.sparse import csr_matrix
-
-    topic_to_idx = {t: i for i, t in enumerate(unique_topics)}
-    topic_indices = df["topic_clean"].map(topic_to_idx).values
-
-    # Формирование разреженной матрицы принадлежности работ темам.
-    group_matrix = csr_matrix(
-        (
-            np.ones(len(df), dtype=np.float32),
-            (topic_indices, np.arange(len(df))),
-        ),
-        shape=(len(unique_topics), len(df)),
-    )
-
-    # Агрегация и нормализация тематических центроидов.
-    centroids = group_matrix.dot(tfidf_matrix)
-    counts = np.asarray(group_matrix.sum(axis=1)).ravel()
-    counts[counts == 0] = 1
-    centroids = centroids.multiply(1.0 / counts[:, None])
-
-    # Новизна определяется как единица минус косинусное сходство работы
-    # с центроидом соответствующей темы. Расчет выполняется по темам,
-    # чтобы не формировать крупную промежуточную sparse-матрицу.
-    from sklearn.preprocessing import normalize
-
-    centroids_norm = normalize(centroids, axis=1)
-    tfidf_norm = normalize(tfidf_matrix, axis=1)
-    cosine_sim = np.zeros(len(df), dtype=np.float32)
-
-    for topic, topic_idx in topic_to_idx.items():
-        mask = topic_indices == topic_idx
-        if not np.any(mask):
-            continue
-
-        centroid = np.asarray(centroids_norm[topic_idx].toarray()).ravel()
-        topic_vectors = tfidf_norm[mask].toarray()
-        cosine_sim[mask] = (topic_vectors @ centroid).astype(np.float32)
-
-    # Вычисление текстовой новизны.
-    df["novelty_raw"] = (1.0 - cosine_sim).astype(np.float32)
-
+    # 2. Расчет текстовых и графовых признаков только по доступной истории.
+    df["novelty_raw"], df["cluster_density"] = calculate_temporal_text_features(df)
     df["is_outlier_cluster"] = calculate_outlier_proxy(df)
-    df["ppmi_domain_score"], df["distinct_venues_ratio"] = calculate_sample_graph_features(df)
-
-    # Норма центроида используется как приближенная оценка тематической плотности.
-    topic_densities = (
-        centroids.multiply(centroids).sum(axis=1)
-    )  # Норма центроида как прокси кучности
-    topic_density_dict = dict(
-        zip(unique_topics, np.asarray(topic_densities).ravel())
-    )
-    df["cluster_density"] = (
-        df["topic_clean"].map(topic_density_dict).fillna(0.0).astype(np.float32)
-    )
-
-    df.drop(columns=["topic_clean"], inplace=True)
+    df["ppmi_domain_score"], df["distinct_venues_ratio"] = calculate_temporal_graph_features(df)
     print("[INFO] Векторные признаки рассчитаны.")
 
     # 3. Динамика цитирований
     print("[INFO] Расчет показателей цитирования.")
-    df["citation_velocity"] = df.apply(
-        lambda r: (
-            float(r["citations_at_cutoff"] / max(1, 2026 - int(r["pub_year"])))
-            if pd.notna(r["citations_at_cutoff"]) and pd.notna(r["pub_year"])
-            else 0.0
-        ),
-        axis=1,
-    )
-
-    def parse_acc(val):
-        if val is None:
+    def parse_acc(val, cutoff_year: int) -> float:
+        """Use fixed calendar-year bins ending at the prediction year."""
+        if val is None or (isinstance(val, float) and pd.isna(val)):
             return 0.0
 
         try:
@@ -383,21 +366,39 @@ def build_real_features(input_parquet_path: str, output_parquet_path: str):
                 item["year"]: item.get("cited_by_count", 0)
                 for item in data
             }
-
-            years = sorted(c_dict.keys(), reverse=True)
-
-            if len(years) < 2:
-                return 0.0
-
-            last_12m = c_dict.get(years[0], 0)
-            prev_24m = sum(c_dict.get(y, 0) for y in years[1:3])
-
+            last_12m = c_dict.get(cutoff_year, 0)
+            prev_24m = c_dict.get(cutoff_year - 1, 0) + c_dict.get(cutoff_year - 2, 0)
             return float((last_12m + 1e-5) / (prev_24m + 1e-5))
-
         except (TypeError, ValueError, KeyError, json.JSONDecodeError):
             return 0.0
 
-    df["citation_acceleration"] = df["counts_by_year"].apply(parse_acc)
+    historical_citations = []
+    historical_acceleration = []
+    for pub_year, counts in zip(df["pub_year"], df["counts_by_year"]):
+        if pd.isna(pub_year):
+            historical_citations.append(0.0)
+            historical_acceleration.append(0.0)
+            continue
+        try:
+            parsed = json.loads(counts) if isinstance(counts, str) else counts
+            parsed = [
+                item for item in (parsed or [])
+                if item.get("year", 0) <= int(pub_year)
+            ]
+            historical_citations.append(
+                float(sum(item.get("cited_by_count", 0) for item in parsed))
+            )
+            historical_acceleration.append(parse_acc(parsed, int(pub_year)))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            historical_citations.append(0.0)
+            historical_acceleration.append(0.0)
+
+    df["citation_velocity"] = pd.Series(
+        historical_citations, index=df.index, dtype=np.float32
+    )
+    df["citation_acceleration"] = pd.Series(
+        historical_acceleration, index=df.index, dtype=np.float32
+    )
 
     # 4. Формирование итоговой таблицы из 13 колонок.
     print("[INFO] Формирование итогового набора признаков.")
