@@ -3,7 +3,7 @@ import os
 
 
 # Папка, внутри которой будут создаваться output1, output2, ...
-OUTPUT_DIR = r""
+OUTPUT_DIR = r"logics"
 
 
 def create_output_dir():

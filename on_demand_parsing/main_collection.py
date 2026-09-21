@@ -1,4 +1,4 @@
-from openalex_client import (
+from on_demand_parsing.openalex_client import (
     search_works,
     search_works_by_topic,
     get_topic_year_count

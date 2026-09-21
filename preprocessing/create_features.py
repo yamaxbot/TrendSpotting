@@ -363,20 +363,38 @@ def build_real_features(input_parquet_path: str, output_parquet_path: str):
     )
 
     def parse_acc(val):
-        if not val or pd.isna(val):
+        if val is None:
             return 0.0
+
         try:
-            data = json.loads(val) if isinstance(val, str) else val
+            if isinstance(val, str):
+                data = json.loads(val)
+            elif isinstance(val, (list, tuple, np.ndarray)):
+                data = val
+            elif pd.isna(val):
+                return 0.0
+            else:
+                return 0.0
+
+            if len(data) == 0:
+                return 0.0
+
             c_dict = {
-                item["year"]: item.get("cited_by_count", 0) for item in data
+                item["year"]: item.get("cited_by_count", 0)
+                for item in data
             }
+
             years = sorted(c_dict.keys(), reverse=True)
+
             if len(years) < 2:
                 return 0.0
+
             last_12m = c_dict.get(years[0], 0)
             prev_24m = sum(c_dict.get(y, 0) for y in years[1:3])
+
             return float((last_12m + 1e-5) / (prev_24m + 1e-5))
-        except:
+
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
             return 0.0
 
     df["citation_acceleration"] = df["counts_by_year"].apply(parse_acc)
