@@ -1,0 +1,201 @@
+{
+  "features_path": "data\\train_data\\processed_ml_dataset.parquet",
+  "rows_used": 823531,
+  "max_observed_year": 2026,
+  "latest_target_year": 2023,
+  "train_last_year": 2021,
+  "validation_year": 2022,
+  "test_year": 2023,
+  "train_rows": 705885,
+  "validation_rows": 58823,
+  "test_rows": 58823,
+  "feature_columns": [
+    "source_tier",
+    "novelty_raw",
+    "cluster_density",
+    "is_outlier_cluster",
+    "ppmi_domain_score",
+    "commercial_maturity_index",
+    "citation_velocity",
+    "citation_acceleration",
+    "distinct_venues_ratio",
+    "author_growth_rate",
+    "has_ref_data"
+  ],
+  "categorical_features": [
+    "source_tier"
+  ],
+  "dropped_columns": [
+    "abstract_text",
+    "doc_id",
+    "primary_topic_id",
+    "pub_year",
+    "target_emergence",
+    "title",
+    "topics_json"
+  ],
+  "class_ratio_train": 8.923732268631117,
+  "scale_pos_weight": 1.0,
+  "weighting_mode": "none",
+  "depth": 5,
+  "l2_leaf_reg": 15,
+  "threshold_objective": "F0.5",
+  "early_stopping_metric": "PRAUC",
+  "iterations": 500,
+  "best_iteration": 0,
+  "validation_pr_auc": 0.10424721276327445,
+  "selected_threshold": 0.4765486995836703,
+  "test_pr_auc": 0.12178918654543974,
+  "test_roc_auc": 0.5615816926413124,
+  "test_precision": 0.186266771902131,
+  "test_recall": 0.23971559167089893,
+  "test_f1": 0.20963801909837887,
+  "test_f0_5": 0.1949607600165221,
+  "top_k_metrics": {
+    "top_1pct": {
+      "k": 588,
+      "precision": 0.14625850340136054,
+      "recall": 0.014558997799221263
+    },
+    "top_5pct": {
+      "k": 2941,
+      "precision": 0.16150969058143488,
+      "recall": 0.08041306923988488
+    }
+  },
+  "test_confusion_matrix": [
+    [
+      46730,
+      6186
+    ],
+    [
+      4491,
+      1416
+    ]
+  ],
+  "test_classification_report": {
+    "0": {
+      "precision": 0.9123211182913258,
+      "recall": 0.8830977398140449,
+      "f1-score": 0.8974715999116548,
+      "support": 52916.0
+    },
+    "1": {
+      "precision": 0.186266771902131,
+      "recall": 0.23971559167089893,
+      "f1-score": 0.20963801909837887,
+      "support": 5907.0
+    },
+    "accuracy": 0.8184893664042976,
+    "macro avg": {
+      "precision": 0.5492939450967284,
+      "recall": 0.5614066657424719,
+      "f1-score": 0.5535548095050169,
+      "support": 58823.0
+    },
+    "weighted avg": {
+      "precision": 0.8394108106885009,
+      "recall": 0.8184893664042976,
+      "f1-score": 0.8283994179103285,
+      "support": 58823.0
+    }
+  },
+  "top20_feature_importance_gain": [
+    {
+      "feature": "author_growth_rate",
+      "gain": 98.49526767910916
+    },
+    {
+      "feature": "citation_velocity",
+      "gain": 1.5047323208908445
+    },
+    {
+      "feature": "source_tier",
+      "gain": 0.0
+    },
+    {
+      "feature": "cluster_density",
+      "gain": 0.0
+    },
+    {
+      "feature": "novelty_raw",
+      "gain": 0.0
+    },
+    {
+      "feature": "ppmi_domain_score",
+      "gain": 0.0
+    },
+    {
+      "feature": "is_outlier_cluster",
+      "gain": 0.0
+    },
+    {
+      "feature": "commercial_maturity_index",
+      "gain": 0.0
+    },
+    {
+      "feature": "citation_acceleration",
+      "gain": 0.0
+    },
+    {
+      "feature": "distinct_venues_ratio",
+      "gain": 0.0
+    },
+    {
+      "feature": "has_ref_data",
+      "gain": 0.0
+    }
+  ],
+  "feature_diagnostics": {
+    "novelty_raw": {
+      "zero_fraction": 0.0,
+      "nan_fraction": 0.0,
+      "unique_values": 721484
+    },
+    "cluster_density": {
+      "zero_fraction": 0.07222800356027885,
+      "nan_fraction": 0.0,
+      "unique_values": 13
+    },
+    "is_outlier_cluster": {
+      "zero_fraction": 0.9988622164800111,
+      "nan_fraction": 0.0,
+      "unique_values": 2
+    },
+    "ppmi_domain_score": {
+      "zero_fraction": 0.07222800356027885,
+      "nan_fraction": 0.0,
+      "unique_values": 8317
+    },
+    "commercial_maturity_index": {
+      "zero_fraction": 0.9500880962586715,
+      "nan_fraction": 0.24679823831768324,
+      "unique_values": 298
+    },
+    "citation_velocity": {
+      "zero_fraction": 0.7869600537198964,
+      "nan_fraction": 0.0,
+      "unique_values": 203
+    },
+    "citation_acceleration": {
+      "zero_fraction": 0.9857297418069265,
+      "nan_fraction": 0.0,
+      "unique_values": 357
+    },
+    "distinct_venues_ratio": {
+      "zero_fraction": 0.0,
+      "nan_fraction": 0.0,
+      "unique_values": 1
+    },
+    "author_growth_rate": {
+      "zero_fraction": 0.09090611039535852,
+      "nan_fraction": 0.0,
+      "unique_values": 9604
+    },
+    "has_ref_data": {
+      "zero_fraction": 0.0,
+      "nan_fraction": 0.0,
+      "unique_values": 1
+    }
+  }
+}

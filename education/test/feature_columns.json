@@ -1,0 +1,18 @@
+{
+  "features": [
+    "source_tier",
+    "novelty_raw",
+    "cluster_density",
+    "is_outlier_cluster",
+    "ppmi_domain_score",
+    "commercial_maturity_index",
+    "citation_velocity",
+    "citation_acceleration",
+    "distinct_venues_ratio",
+    "author_growth_rate",
+    "has_ref_data"
+  ],
+  "categorical_features": [
+    "source_tier"
+  ]
+}

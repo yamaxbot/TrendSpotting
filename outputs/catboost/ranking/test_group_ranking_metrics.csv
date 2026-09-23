@@ -1,0 +1,3 @@
+group,k,precision_at_k,recall_at_k,positives_in_top_k,group_positives
+2021,100,0.58,0.009751176866173503,58,5948
+2022,100,0.37,0.006275440976933514,37,5896

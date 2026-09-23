@@ -19,7 +19,7 @@ def run_full_eda(parquet_path: str):
     # Загружаем через Polars для высокой скорости на 1M строк
     pldf = pl.read_parquet(parquet_path)
     df = pldf.to_pandas()  # Для специфических sklearn/scipy метрик
-
+    print(df.columns.tolist())
     num_rows, num_cols = pldf.shape
     print(f"Размер датасета: {num_rows:,} строк x {num_cols} колонок")
     print(
