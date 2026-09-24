@@ -1,7 +1,10 @@
 from pathlib import Path
+import sys
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR.parent))
 SECRET_KEY = "trendspotting-local-prototype"
 DEBUG = True
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]

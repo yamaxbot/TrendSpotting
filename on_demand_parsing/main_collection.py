@@ -5,9 +5,6 @@ from on_demand_parsing.openalex_client import (
 )
 
 
-START_YEAR = 2018
-END_YEAR = 2026
-
 # Для разработки пока используем небольшие лимиты
 MAIN_LIMIT = 5000
 EXPLORATION_LIMIT = 1000
@@ -23,13 +20,16 @@ def deduplicate_works(works):
     return list(unique.values())
 
 
-def collect_main_corpus(selected_topics, query):
+def collect_main_corpus(selected_topics, query, years):
     works = []
     yearly_stats = {}
 
     # 1. Main Collection по Selected Topics
     if selected_topics:
-        limit_per_topic = MAIN_LIMIT // len(selected_topics)
+        limit_per_topic_year = max(
+            1,
+            MAIN_LIMIT // (len(selected_topics) * len(years)),
+        )
 
         for topic in selected_topics:
             topic_id = topic["id"]
@@ -37,10 +37,15 @@ def collect_main_corpus(selected_topics, query):
 
             print(f"\nCollecting: {topic_name}")
 
-            topic_works = search_works_by_topic(
-                topic_id,
-                limit=limit_per_topic
-            )
+            topic_works = []
+            for year in years:
+                topic_works.extend(
+                    search_works_by_topic(
+                        topic_id,
+                        limit=limit_per_topic_year,
+                        year=year,
+                    )
+                )
 
             works.extend(topic_works)
 
@@ -50,7 +55,7 @@ def collect_main_corpus(selected_topics, query):
             # этого Topic по годам
             yearly_stats[topic_name] = {}
 
-            for year in range(START_YEAR, END_YEAR + 1):
+            for year in years:
                 count = get_topic_year_count(
                     topic_id,
                     year
@@ -63,7 +68,8 @@ def collect_main_corpus(selected_topics, query):
 
     exploration_works = search_works(
         query,
-        limit=EXPLORATION_LIMIT
+        limit=EXPLORATION_LIMIT,
+        years=years,
     )
 
     print("Exploration works:", len(exploration_works))

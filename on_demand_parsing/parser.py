@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import re
 from pathlib import Path
 
 import pyarrow as pa
@@ -13,6 +14,18 @@ from on_demand_parsing.main_collection import collect_main_corpus
 from on_demand_parsing.normalization import normalize_works
 from on_demand_parsing.relevance_filter import score_relevance, filter_relevant
 from on_demand_parsing.storage import save_results
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PARSE_DATA_DIR = PROJECT_ROOT / "website" / "data"
+PARSING_YEARS = (2024, 2025, 2026)
+
+
+def get_parse_corpus_path(user_query: str) -> Path:
+    """Вернуть путь корпуса с безопасным именем пользовательского запроса."""
+    filename = re.sub(r'[<>:"/\\|?*]+', "_", user_query.strip())
+    filename = re.sub(r"\s+", "_", filename).strip("._")
+    return PARSE_DATA_DIR / f"parse_corpus_{filename[:100] or 'query'}.parquet"
 
 
 # Та же схема, что у датасета на 1 млн статей
@@ -32,6 +45,7 @@ STRINGS = [
     "topics_json",
     "source_id",
     "doi",
+    "article_url",
     "fetched_at",
     "stratum",
     "target_status",
@@ -235,6 +249,8 @@ def make_parquet_record(work, query):
 
         "doi": work.get("doi"),
 
+        "article_url": work.get("article_url"),
+
         "fetched_at": dt.datetime.now(
             dt.timezone.utc
         ).isoformat(),
@@ -270,7 +286,7 @@ def make_parquet_record(work, query):
 def save_parquet(
     works,
     query,
-    output_path="data/openalex_corpus.parquet"
+    output_path,
 ):
     records = [
         make_parquet_record(work, query)
@@ -302,7 +318,13 @@ def save_parquet(
     return table
 
 
-def run_parser(user_query):
+def run_parser(user_query, years=PARSING_YEARS):
+    years = tuple(sorted({int(year) for year in years}))
+    if not years:
+        raise ValueError("Нужно указать хотя бы один год публикации")
+
+    output_path = get_parse_corpus_path(user_query)
+
     # 1. Query normalization
 
     query = normalize_query(user_query)
@@ -313,7 +335,8 @@ def run_parser(user_query):
 
     seed_works = search_works(
         query,
-        limit=1000
+        limit=1000,
+        years=years,
     )
 
     print(
@@ -322,6 +345,10 @@ def run_parser(user_query):
     )
 
     # 3. Topic Discovery
+
+    if not seed_works:
+        save_parquet([], query, output_path)
+        return [], {}
 
     topics = discover_topics(
         seed_works
@@ -366,7 +393,8 @@ def run_parser(user_query):
     main_works, yearly_stats = (
         collect_main_corpus(
             selected_topics,
-            query
+            query,
+            years,
         )
     )
 
@@ -382,10 +410,22 @@ def run_parser(user_query):
         main_works
     )
 
+    before_quality_filter = len(normalized_works)
+    normalized_works = [
+        work
+        for work in normalized_works
+        if work.get("abstract")
+        and work.get("referenced_works_ids")
+    ]
+
     print("\nNORMALIZATION:")
     print(
         "Normalized works:",
         len(normalized_works)
+    )
+    print(
+        "Removed without abstract or references:",
+        before_quality_filter - len(normalized_works),
     )
 
     # 8. Relevance filtering
@@ -451,7 +491,7 @@ def run_parser(user_query):
     save_parquet(
         clean_works,
         query,
-        "data/openalex_corpus.parquet"
+        output_path,
     )
 
     return clean_works, yearly_stats

@@ -28,3 +28,5 @@ on_demand_parsing/data
 .mypy_cache/
 .ruff_cache/
 education/catboost_info
+logics/
+test_dataset/

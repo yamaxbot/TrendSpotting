@@ -112,6 +112,12 @@ def normalize_work(work):
 
         "doi": work.get("doi"),
 
+        "article_url": (
+            primary_location.get("landing_page_url")
+            or work.get("doi")
+            or work.get("id")
+        ),
+
         "title": work.get("title"),
 
         "abstract": restore_abstract(

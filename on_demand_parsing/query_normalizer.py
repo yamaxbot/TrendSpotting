@@ -10,42 +10,23 @@ API_URL = "https://api.kie.ai/gpt-5-2/v1/chat/completions"
 API_KEY = os.getenv("KIE_API_KEY")
 
 
-PROMPT = """
-Convert the user's request into a concise English search query for OpenAlex.
-
-Rules:
-- The output MUST be in English.
-- Translate Russian and other languages into English.
-- Keep only the scientific or technological subject and important constraints.
-- Remove intent words such as:
-  find, show, new, promising, emerging, weak signals, topics about.
-- Do not invent or add technologies.
-- Preserve important domain constraints.
-- Return ONLY the final English query.
-
-Examples:
-
-"ии"
--> "artificial intelligence"
-
-"кибербезопасность"
--> "cybersecurity"
-
-"новые технологии в робототехнике"
--> "robotics"
-
-"Найди перспективные технологии защиты промышленных систем от кибератак"
--> "industrial control systems cybersecurity"
-"""
+PROMPT = """Convert the request into a concise English OpenAlex search query.
+Keep only the scientific/technical subject and essential domain constraints. Remove
+search intent and novelty words. Translate accurately; never add concepts. Output
+only the query, without quotes or commentary."""
 
 
 def normalize_query(query):
+    if not API_KEY:
+        raise RuntimeError("KIE_API_KEY не задан")
     response = requests.post(
         API_URL,
         headers={
             "Authorization": f"Bearer {API_KEY}"
         },
         json={
+            "temperature": 0.0,
+            "max_tokens": 40,
             "messages": [
                 {
                     "role": "system",
@@ -60,9 +41,16 @@ def normalize_query(query):
         timeout=30
     )
 
+    response.raise_for_status()
     data = response.json()
 
-    return (
-        data["choices"][0]["message"]["content"]
-        .strip()
-    )
+    try:
+        result = data["choices"][0]["message"]["content"]
+        if not isinstance(result, str) or not result.strip():
+            raise ValueError("Empty search query")
+        normalized = result.strip().splitlines()[0].strip(" `*_\"'")
+        if not normalized:
+            raise ValueError("Empty normalized query")
+        return normalized
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise RuntimeError("Не удалось подготовить поисковый запрос") from exc

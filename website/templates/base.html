@@ -6,16 +6,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}ТрендСкан{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'css/site.css' %}">
+  <link rel="stylesheet" href="{% static 'css/loading.css' %}?v=3">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="{% url 'dashboard' %}"><span class="brand-mark">↗</span><span>ТрендСкан</span></a>
       <nav class="topnav"><a class="active" href="{% url 'dashboard' %}">Поиск трендов</a><a href="#how">Как это работает</a><a href="#about">О проекте</a></nav>
-      <div class="top-actions"><button class="icon-button" aria-label="Поиск">⌕</button><a class="user-chip" href="#account">АИ</a></div>
     </header>
     <main>{% block content %}{% endblock %}</main>
   </div>
-  <script src="{% static 'js/site.js' %}"></script>
+  <script src="{% static 'js/site.js' %}?v=4"></script>
 </body>
 </html>

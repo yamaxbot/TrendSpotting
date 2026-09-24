@@ -2,19 +2,30 @@
 {% block title %}Поиск трендов · ТрендСкан{% endblock %}
 {% block content %}
 <section class="dashboard-hero">
-  <div class="eyebrow"><span class="status-dot"></span> Аналитика научного корпуса</div>
   <h1>Поиск слабых<br><em>сигналов</em> будущего</h1>
   <p class="hero-copy">Находим направления, которые только набирают импульс, но уже видны в научной литературе.</p>
   <form class="search-form" method="get">
-    <span class="search-icon">⌕</span><input name="q" value="{{ query }}" placeholder="Например: технологии в ИИ"><button type="submit">Найти</button>
+    <span class="search-icon">⌕</span><input name="q" value="{{ query }}" maxlength="200" required aria-label="Поисковый запрос" placeholder="Например: технологии в ИИ"><button type="submit">Найти</button>
   </form>
   <div class="hero-note"><span>↗</span> Введите область, технологию или научный вопрос</div>
 </section>
+<div class="loading-overlay" data-loading-overlay {% if pending %}data-status-url="{% url 'search_status' %}?q={{ query|urlencode }}"{% else %}hidden{% endif %} role="status" aria-live="polite">
+  <div class="loading-card">
+    <span class="loading-spinner" aria-hidden="true"></span>
+    <strong>Идёт загрузка, подождите</strong>
+  </div>
+</div>
+<p id="search-error" role="alert">{% if error %}{{ error }}{% endif %}</p>
+{% if pending %}<noscript><p>Поиск запущен. Включите JavaScript для автоматического обновления или обновите страницу позже.</p></noscript>{% endif %}
+{% if query and not pending and not error %}
 <section class="results-section" id="results">
-  <div class="section-heading"><div><div class="eyebrow">Результаты поиска</div><h2>Сигналы по запросу «{{ query }}»</h2></div><button class="filter-button">Все направления <span>⌄</span></button></div>
-  <div class="metrics"><div><strong>{{ publication_count }}</strong><span>релевантных публикаций</span></div><div><strong>15</strong><span>выявлено направлений</span></div><div><strong>2018—2026</strong><span>период наблюдения</span></div></div>
+  <div class="section-heading"><div><div class="eyebrow">Результаты поиска</div><h2>Сигналы по запросу «{{ query }}»</h2></div></div>
+  <div class="metrics"><div><strong>{{ publication_count }}</strong><span>релевантных публикаций</span></div></div>
+  {% if error %}<p>{{ error }}</p>{% endif %}
+  {% if not trends %}<p>По этому запросу публикации не найдены.</p>{% endif %}
   <div class="content-grid"><div class="trend-list"><div class="list-label">ТОП-15 направлений <span>По уверенности модели</span></div>
     {% for trend in trends %}<a class="trend-card" href="{% url 'trend_detail' trend.slug %}?q={{ query|urlencode }}"><div class="rank">{{ trend.rank|stringformat:'02d' }}</div><div class="trend-main"><div class="trend-meta"><span class="area-tag {{ trend.color }}">{{ trend.area }}</span><span class="trend-state"><i></i>{{ trend.direction }}</span></div><h3>{{ trend.name }}</h3><p>{{ trend.description }}</p></div><div class="trend-confidence"><span>Уверенность</span><strong>{{ trend.confidence }}%</strong><div class="confidence-bar"><i style="width: {{ trend.confidence }}%"></i></div></div><span class="arrow">↗</span></a>{% endfor %}
-  </div><aside class="insight-panel"><div class="panel-top"><span class="panel-icon">◌</span><span>Сводка анализа</span></div><h3>Что происходит<br>в корпусе</h3><p>Модель нашла <b>15 направлений</b> с устойчивой динамикой и расширением авторского сообщества.</p><div class="mini-chart"><div class="chart-grid"><i style="height:28%"></i><i style="height:39%"></i><i style="height:46%"></i><i style="height:62%"></i><i style="height:76%"></i><i style="height:94%"></i></div><div class="chart-axis"><span>2018</span><span>2020</span><span>2022</span><span>2024</span><span>2026</span></div></div><div class="legend"><span><i class="legend-line"></i> Рост сигнала</span><span>+ 38%</span></div><div class="panel-foot"><span class="pulse"></span> Последнее обновление: сегодня, 14:32</div></aside></div>
+  </div><aside class="insight-panel"><div class="panel-top"><span class="panel-icon">◌</span><span>Сводка анализа</span></div><h3>Что происходит<br>в корпусе</h3><p>Модель нашла <b>{{ trends|length }} направлений</b>. Дополнительная аналитическая сводка: None.</p><div class="mini-chart"><div class="chart-grid"></div><div class="chart-axis"><span>None</span></div></div><div class="legend"><span><i class="legend-line"></i> Рост сигнала</span><span>None</span></div><div class="panel-foot"><span class="pulse"></span> Последнее обновление: None</div></aside></div>
 </section>
+{% endif %}
 {% endblock %}

@@ -8,6 +8,8 @@ model = SentenceTransformer(
 
 
 def score_topics(query, topics):
+    if not topics:
+        return []
     names = list(topics.keys())
 
     query_embedding = model.encode(query)
