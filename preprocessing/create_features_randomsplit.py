@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse
 from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.model_selection import train_test_split
 
 
 # ============================================================
@@ -27,8 +28,34 @@ SMOOTHING = 5.0
 # Text representation.
 TEXT_N_FEATURES = 2000
 
-# Robust clipping for a few heavy-tailed dynamic features.
+# Robust clipping for heavy-tailed dynamic features.
 LOG_GROWTH_CLIP = 5.0
+
+# ------------------------------------------------------------
+# Dataset split
+# ------------------------------------------------------------
+# "random"  -> stratified random split across all publication years.
+# "temporal" -> train/valid/test by publication year.
+SPLIT_MODE = "random"
+
+RANDOM_STATE = 42
+TRAIN_SIZE = 0.80
+VALID_SIZE = 0.10
+TEST_SIZE = 0.10
+
+# Used only when SPLIT_MODE == "temporal".
+TEMPORAL_TRAIN_END_YEAR = 2018
+TEMPORAL_VALID_END_YEAR = 2020
+
+# IMPORTANT:
+# In random mode, historical feature state is built separately for
+# each split. A validation/test paper can use only TRAIN papers that
+# were published before it. This prevents a validation/test paper from
+# becoming part of the history used to construct TRAIN features.
+#
+# In temporal mode, a paper may use all earlier papers, because all
+# earlier years are legitimately available at deployment time.
+RANDOM_HISTORY_ONLY_TRAIN = True
 
 INPUT_PATH = "download_dataset/new_dataset/new_data/openalex_corpus_1m.parquet"
 OUTPUT_PATH = "download_dataset/new_dataset/new_data/final_openalex_dataset.parquet"
@@ -111,7 +138,6 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
 
     Future information is used ONLY for the label.
     """
-
     logger.info("Calculating historical emergence target...")
 
     topics = df["primary_topic_id"].to_numpy()
@@ -128,7 +154,6 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
 
     topic_year_counts = work.groupby(["topic", "year"]).size().to_dict()
 
-    # Compute one growth value per (topic, year), then map it back to papers.
     keys = []
     for topic, year in zip(topics, years):
         if pd.isna(topic) or pd.isna(year):
@@ -204,32 +229,73 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
 
 
 # ============================================================
-# 2. Topic publication dynamics
+# 2. Historical state helpers
+# ============================================================
+
+def _history_mask(
+    df: pd.DataFrame,
+    current_year: int,
+    allowed_history_indices: np.ndarray | None,
+) -> np.ndarray:
+    """
+    Return rows that may be used as historical information for current_year.
+
+    If allowed_history_indices is None:
+        all rows with pub_year < current_year are allowed.
+
+    Otherwise:
+        only rows in allowed_history_indices with pub_year < current_year
+        are allowed.
+    """
+    years = pd.to_numeric(df["pub_year"], errors="coerce").to_numpy()
+
+    mask = np.isfinite(years) & (years < current_year)
+
+    if allowed_history_indices is not None:
+        allowed = np.zeros(len(df), dtype=bool)
+        allowed[allowed_history_indices] = True
+        mask &= allowed
+
+    return mask
+
+
+# ============================================================
+# 3. Topic publication dynamics
 # ============================================================
 
 def calculate_topic_dynamics(
     df: pd.DataFrame,
+    allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
     Historical topic-level publication dynamics.
 
-    These are deliberately separate from text geometry:
-    they describe how much the research community is publishing
-    around a topic and whether that activity is accelerating.
-    """
+    For a paper in year Y, only papers from Y-1..Y-3 that belong to
+    allowed_history_indices are used.
 
+    In random mode, pass TRAIN indices so validation/test papers never
+    contribute to feature history.
+    """
     logger.info("Calculating topic publication dynamics...")
 
     topics = df["primary_topic_id"].to_numpy()
     years = pd.to_numeric(df["pub_year"], errors="coerce").to_numpy()
 
-    work = pd.DataFrame({"topic": topics, "year": years})
-    counts = (
-        work.dropna()
-        .groupby(["topic", "year"])
-        .size()
-        .to_dict()
-    )
+    counts: dict[tuple, int] = defaultdict(int)
+
+    if allowed_history_indices is None:
+        history_indices = np.arange(len(df))
+    else:
+        history_indices = np.asarray(allowed_history_indices)
+
+    for idx in history_indices:
+        topic = topics[idx]
+        year = years[idx]
+
+        if pd.isna(topic) or pd.isna(year):
+            continue
+
+        counts[(topic, int(year))] += 1
 
     n = len(df)
     volume = np.zeros(n, dtype=np.float32)
@@ -237,10 +303,9 @@ def calculate_topic_dynamics(
     acceleration = np.zeros(n, dtype=np.float32)
     age = np.zeros(n, dtype=np.float32)
 
+    # Age is based on historical first appearance.
     first_year: dict[Any, int] = {}
-
-    for (topic, year), count in counts.items():
-        year = int(year)
+    for (topic, year), _count in counts.items():
         if topic not in first_year or year < first_year[topic]:
             first_year[topic] = year
 
@@ -261,12 +326,16 @@ def calculate_topic_dynamics(
         g1 = np.log2((y1 + 1.0) / (y2 + 1.0))
         g2 = np.log2((y2 + 1.0) / (y3 + 1.0))
 
-        growth[i] = np.float32(np.clip(g1, -LOG_GROWTH_CLIP, LOG_GROWTH_CLIP))
+        growth[i] = np.float32(
+            np.clip(g1, -LOG_GROWTH_CLIP, LOG_GROWTH_CLIP)
+        )
         acceleration[i] = np.float32(
             np.clip(g1 - g2, -LOG_GROWTH_CLIP, LOG_GROWTH_CLIP)
         )
 
-        age[i] = np.float32(max(0, year - first_year.get(topic, year)))
+        age[i] = np.float32(
+            max(0, year - first_year.get(topic, year))
+        )
 
     return pd.DataFrame(
         {
@@ -280,16 +349,18 @@ def calculate_topic_dynamics(
 
 
 # ============================================================
-# 3. Author dynamics
+# 4. Author dynamics
 # ============================================================
 
-def calculate_author_features(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_author_features(
+    df: pd.DataFrame,
+    allowed_history_indices: np.ndarray | None = None,
+) -> pd.DataFrame:
     """
     Historical author-community dynamics.
 
-    All values use only years before the paper's publication year.
+    Only allowed history rows are used to build author counts.
     """
-
     logger.info("Calculating author dynamics...")
 
     authors_column = (
@@ -298,19 +369,26 @@ def calculate_author_features(df: pd.DataFrame) -> pd.DataFrame:
         else "authorships_json"
     )
 
+    topics = df["primary_topic_id"].to_numpy()
+    years = pd.to_numeric(df["pub_year"], errors="coerce").to_numpy()
+
     topic_year_authors: defaultdict[tuple, set] = defaultdict(set)
 
-    for topic, year, authors in zip(
-        df["primary_topic_id"],
-        df["pub_year"],
-        df[authors_column],
-    ):
+    if allowed_history_indices is None:
+        history_indices = np.arange(len(df))
+    else:
+        history_indices = np.asarray(allowed_history_indices)
+
+    for idx in history_indices:
+        topic = topics[idx]
+        year = years[idx]
+
         if pd.isna(topic) or pd.isna(year):
             continue
 
         year = int(year)
 
-        for author_id in extract_author_ids(authors):
+        for author_id in extract_author_ids(df.iloc[idx][authors_column]):
             topic_year_authors[(topic, year)].add(author_id)
 
     author_counts = {
@@ -323,9 +401,7 @@ def calculate_author_features(df: pd.DataFrame) -> pd.DataFrame:
     acceleration = np.zeros(n, dtype=np.float32)
     volume = np.zeros(n, dtype=np.float32)
 
-    for i, (topic, year) in enumerate(
-        zip(df["primary_topic_id"], df["pub_year"])
-    ):
+    for i, (topic, year) in enumerate(zip(topics, years)):
         if pd.isna(topic) or pd.isna(year):
             continue
 
@@ -357,48 +433,29 @@ def calculate_author_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# 4. Temporal text geometry
+# 5. Temporal text geometry
 # ============================================================
 
 def calculate_temporal_text_features(
     df: pd.DataFrame,
     text_matrix: scipy.sparse.csr_matrix,
+    allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
-    Multi-view historical text geometry.
+    Point-in-time text geometry.
 
-    For a paper from year Y, only papers from years < Y are used.
+    For a paper from year Y, historical centroids contain only papers
+    from years < Y and, when allowed_history_indices is provided, only
+    those rows.
 
-    Returned views:
-      - novelty_raw:
-          1 - cosine similarity to historical topic centroid.
-      - topic_centroid_similarity:
-          same similarity, exposed explicitly for interpretability.
-      - cluster_density:
-          norm of historical topic centroid. This is a concentration
-          proxy, not simply "number of papers".
-      - topic_local_volume:
-          number of historical papers in the topic.
-      - nearest_topic_similarity:
-          similarity to the closest *other* historical topic centroid.
-      - cross_topic_gap:
-          difference between own-topic similarity and nearest-other-topic
-          similarity.
-
-    The last two features are intended to capture whether a paper sits
-    unusually close to another scientific territory, rather than merely
-    being far from its own center.
+    This is the critical anti-leakage mechanism for random splitting.
     """
-
     logger.info("Calculating temporal text geometry...")
 
     n = len(df)
 
     topics = df["primary_topic_id"].to_numpy()
-    years = pd.to_numeric(
-        df["pub_year"],
-        errors="coerce",
-    ).to_numpy()
+    years = pd.to_numeric(df["pub_year"], errors="coerce").to_numpy()
 
     novelty = np.ones(n, dtype=np.float32)
     own_similarity = np.zeros(n, dtype=np.float32)
@@ -406,16 +463,21 @@ def calculate_temporal_text_features(
     local_volume = np.zeros(n, dtype=np.float32)
     nearest_similarity = np.zeros(n, dtype=np.float32)
     cross_gap = np.zeros(n, dtype=np.float32)
+    outlier = np.zeros(n, dtype=np.int8)
 
-    # Historical topic statistics
+    allowed = None
+    if allowed_history_indices is not None:
+        allowed = np.zeros(n, dtype=bool)
+        allowed[np.asarray(allowed_history_indices)] = True
+
+    valid_years = np.sort(
+        np.unique(years[np.isfinite(years)]).astype(np.int32)
+    )
+
     topic_sum: dict[Any, np.ndarray] = {}
     topic_count: defaultdict[Any, int] = defaultdict(int)
 
-    # Only valid years
-    valid_years = np.sort(
-        np.unique(years[~np.isnan(years)]).astype(np.int32)
-    )
-
+    previous_novelty: list[float] = []
 
     for year in valid_years:
         current = np.flatnonzero(years == year)
@@ -423,26 +485,19 @@ def calculate_temporal_text_features(
         if len(current) == 0:
             continue
 
-        # ------------------------------------------------------------
-        # Group current papers by topic
-        # ------------------------------------------------------------
         topic_to_indices: defaultdict[Any, list[int]] = defaultdict(list)
 
         for idx in current:
             topic = topics[idx]
-
             if pd.notna(topic):
                 topic_to_indices[topic].append(idx)
 
         if not topic_to_indices:
             continue
 
-        # ------------------------------------------------------------
-        # Build historical centroid matrix ONCE for this year
-        # ------------------------------------------------------------
+        # Build centroids from already accepted historical rows only.
         historical_topics = []
         centroid_vectors = []
-        centroid_norms = []
 
         for topic, count in topic_count.items():
             if count <= 0:
@@ -456,15 +511,12 @@ def calculate_temporal_text_features(
 
             historical_topics.append(topic)
             centroid_vectors.append(raw / norm)
-            centroid_norms.append(norm)
 
         if centroid_vectors:
             centroid_matrix = np.asarray(
                 centroid_vectors,
                 dtype=np.float32,
             )
-
-            # O(1) topic -> centroid column lookup
             centroid_pos = {
                 topic: i
                 for i, topic in enumerate(historical_topics)
@@ -473,14 +525,13 @@ def calculate_temporal_text_features(
             centroid_matrix = None
             centroid_pos = {}
 
-        # ------------------------------------------------------------
+        # --------------------------------------------------------
         # Own-topic geometry
-        # ------------------------------------------------------------
+        # --------------------------------------------------------
         for topic, indices in topic_to_indices.items():
             count = topic_count[topic]
 
             if count <= 0:
-                # No historical support for this topic
                 continue
 
             raw = topic_sum[topic] / count
@@ -493,18 +544,10 @@ def calculate_temporal_text_features(
                 continue
 
             centroid_unit = raw / norm
-
             rows = text_matrix[indices]
 
-            sims = np.asarray(
-                rows @ centroid_unit
-            ).reshape(-1)
-
-            sims = np.clip(
-                sims,
-                -1.0,
-                1.0,
-            ).astype(np.float32)
+            sims = np.asarray(rows @ centroid_unit).reshape(-1)
+            sims = np.clip(sims, -1.0, 1.0).astype(np.float32)
 
             own_similarity[indices] = sims
             novelty[indices] = np.clip(
@@ -513,27 +556,16 @@ def calculate_temporal_text_features(
                 2.0,
             )
 
-        # ------------------------------------------------------------
+        # --------------------------------------------------------
         # Cross-topic geometry
-        #
-        # One matrix multiplication for the WHOLE year instead
-        # of one multiplication per topic.
-        # ------------------------------------------------------------
+        # --------------------------------------------------------
         if centroid_matrix is not None and len(centroid_matrix) >= 2:
-
             rows = text_matrix[current]
 
-            # shape:
-            #   n_current × n_historical_topics
             similarities = np.asarray(
                 rows @ centroid_matrix.T
             )
 
-            # Remove each paper's own topic from nearest-topic search.
-            #
-            # This is much faster than:
-            # centroid_topics.index(topic)
-            # for every topic.
             own_positions = np.full(
                 len(current),
                 -1,
@@ -541,11 +573,12 @@ def calculate_temporal_text_features(
             )
 
             for i, idx in enumerate(current):
-                topic = topics[idx]
-                own_positions[i] = centroid_pos.get(topic, -1)
+                own_positions[i] = centroid_pos.get(
+                    topics[idx],
+                    -1,
+                )
 
             valid_own = own_positions >= 0
-
             valid_rows = np.flatnonzero(valid_own)
 
             if len(valid_rows):
@@ -555,7 +588,6 @@ def calculate_temporal_text_features(
                 ] = -np.inf
 
             nearest = similarities.max(axis=1)
-
             nearest = np.where(
                 np.isfinite(nearest),
                 nearest,
@@ -569,61 +601,57 @@ def calculate_temporal_text_features(
             ).astype(np.float32)
 
             nearest_similarity[current] = nearest
-
             cross_gap[current] = (
                 own_similarity[current] - nearest
             )
 
-        # ------------------------------------------------------------
-        # Update history AFTER all feature calculations
-        # ------------------------------------------------------------
+        # --------------------------------------------------------
+        # Outlier threshold.
+        #
+        # The threshold is computed only from historical papers that
+        # were actually allowed to enter the history.
+        # --------------------------------------------------------
+        if previous_novelty:
+            threshold = np.quantile(
+                np.asarray(previous_novelty),
+                0.95,
+            )
+            outlier[current] = (
+                novelty[current] >= threshold
+            ).astype(np.int8)
+
+        # --------------------------------------------------------
+        # Update history AFTER feature calculation.
+        #
+        # In random mode only TRAIN rows are allowed into history.
+        # In temporal mode all current rows are allowed.
+        # --------------------------------------------------------
         for topic, indices in topic_to_indices.items():
+            if allowed is not None:
+                history_indices = [
+                    idx for idx in indices if allowed[idx]
+                ]
+            else:
+                history_indices = indices
 
-            rows = text_matrix[indices]
+            if not history_indices:
+                continue
 
-            # One dense vector per topic, not per paper
-            summed = np.asarray(rows.sum(axis=0)).ravel().astype(np.float32)
+            rows = text_matrix[history_indices]
+            summed = np.asarray(
+                rows.sum(axis=0)
+            ).ravel().astype(np.float32)
 
             if topic in topic_sum:
                 topic_sum[topic] += summed
             else:
                 topic_sum[topic] = summed.copy()
 
-            topic_count[topic] += len(indices)
+            topic_count[topic] += len(history_indices)
 
-
-    # ================================================================
-    # Outlier detection
-    # ================================================================
-    outlier = np.zeros(
-        n,
-        dtype=np.int8,
-    )
-
-    # Keep exactly the original semantics:
-    # threshold for year Y = 95th percentile of ALL papers before Y.
-    #
-    # Instead of constructing `years < year` every time, use a
-    # cumulative list of previous-year indices.
-    previous_indices = []
-
-    for year in valid_years:
-        current = np.flatnonzero(years == year)
-
-        if previous_indices:
-            previous = np.concatenate(previous_indices)
-
-            threshold = np.quantile(
-                novelty[previous],
-                0.95,
+            previous_novelty.extend(
+                novelty[history_indices].tolist()
             )
-
-            outlier[current] = (
-                novelty[current] >= threshold
-            ).astype(np.int8)
-
-        previous_indices.append(current)
-
 
     return pd.DataFrame(
         {
@@ -640,35 +668,25 @@ def calculate_temporal_text_features(
 
 
 # ============================================================
-# 5. Temporal topic-domain structure
+# 6. Temporal topic-domain structure
 # ============================================================
 
 def calculate_temporal_graph_features(
     df: pd.DataFrame,
+    allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
     Historical topic-domain association features.
 
-    NOTE:
-    If the source has only one domain per paper, this is NOT a full
-    domain-domain interdisciplinary graph. We therefore expose several
-    different statistics rather than pretending one PPMI value is a
-    complete interdisciplinary representation.
+    Current paper values are calculated BEFORE its row is added to
+    historical state.
 
-    Features:
-      - ppmi_domain_score:
-          historical association strength topic <-> domain.
-      - topic_domain_rarity:
-          inverse historical frequency of this exact pair.
-      - domain_history_count:
-          historical activity of the domain.
-      - topic_domain_first_seen_age:
-          how long this topic-domain connection has existed.
+    In random mode only TRAIN rows are allowed into historical state.
     """
-
     logger.info("Calculating temporal topic-domain structure...")
 
     n = len(df)
+
     topics = df["primary_topic_id"].to_numpy()
     domains = df["domain_id"].to_numpy()
     years = pd.to_numeric(df["pub_year"], errors="coerce").to_numpy()
@@ -685,6 +703,11 @@ def calculate_temporal_graph_features(
 
     total = 0
 
+    allowed = None
+    if allowed_history_indices is not None:
+        allowed = np.zeros(n, dtype=bool)
+        allowed[np.asarray(allowed_history_indices)] = True
+
     valid_years = sorted(
         int(y) for y in pd.Series(years).dropna().unique()
     )
@@ -700,7 +723,6 @@ def calculate_temporal_graph_features(
                 continue
 
             pair = (topic, domain)
-
             pair_count = pair_counts.get(pair, 0)
 
             if total > 0 and pair_count > 0:
@@ -728,7 +750,11 @@ def calculate_temporal_graph_features(
                     max(0, year - pair_first_year[pair])
                 )
 
+        # Only permitted rows enter the historical graph state.
         for idx in current:
+            if allowed is not None and not allowed[idx]:
+                continue
+
             topic = topics[idx]
             domain = domains[idx]
 
@@ -757,18 +783,18 @@ def calculate_temporal_graph_features(
 
 
 # ============================================================
-# 6. Venue / source structure
+# 7. Venue / source structure
 # ============================================================
 
-def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_source_features(
+    df: pd.DataFrame,
+    allowed_history_indices: np.ndarray | None = None,
+) -> pd.DataFrame:
     """
     Historical publication-source structure.
 
-    These features give the model a view different from text and
-    citations: whether a topic is concentrated in a few venues or
-    spreads across many sources.
+    Only permitted historical rows update source statistics.
     """
-
     logger.info("Calculating historical source structure...")
 
     topics = df["primary_topic_id"].to_numpy()
@@ -778,20 +804,23 @@ def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
     n = len(df)
 
     source_counts: defaultdict[tuple, int] = defaultdict(int)
-    topic_year_sources: defaultdict[tuple, set] = defaultdict(set)
-
-    valid_years = sorted(
-        int(y) for y in pd.Series(years).dropna().unique()
-    )
+    topic_year_sources: defaultdict[Any, set] = defaultdict(set)
 
     source_history_count = np.zeros(n, dtype=np.float32)
     source_novelty = np.zeros(n, dtype=np.float32)
     topic_source_diversity = np.zeros(n, dtype=np.float32)
 
+    allowed = None
+    if allowed_history_indices is not None:
+        allowed = np.zeros(n, dtype=bool)
+        allowed[np.asarray(allowed_history_indices)] = True
+
+    valid_years = sorted(
+        int(y) for y in pd.Series(years).dropna().unique()
+    )
+
     for year in valid_years:
         current = np.flatnonzero(years == year)
-
-        # Historical source counts for each topic.
         topic_to_sources: defaultdict[Any, set] = defaultdict(set)
 
         for idx in current:
@@ -806,27 +835,30 @@ def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
             source_history_count[idx] = np.float32(
                 source_counts.get(key, 0)
             )
-
             source_novelty[idx] = np.float32(
-                1.0 / np.log1p(source_counts.get(key, 0) + 1.0)
+                1.0 / np.log1p(
+                    source_counts.get(key, 0) + 1.0
+                )
             )
 
             historical_sources = topic_year_sources.get(
                 topic,
                 set(),
             )
-
             topic_source_diversity[idx] = np.float32(
                 len(historical_sources)
             )
 
-            topic_to_sources[topic].add(source)
+            if allowed is None or allowed[idx]:
+                topic_to_sources[topic].add(source)
 
-        # Update historical source state.
         for topic, source_set in topic_to_sources.items():
             topic_year_sources[topic].update(source_set)
 
         for idx in current:
+            if allowed is not None and not allowed[idx]:
+                continue
+
             topic = topics[idx]
             source = sources[idx]
 
@@ -846,17 +878,15 @@ def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# 7. Bibliographic support
+# 8. Bibliographic support
 # ============================================================
 
 def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Bibliographic-support features available at publication time.
 
-    These are not future citations. They describe the paper's own
-    reference structure.
+    These are properties of the paper itself, not future information.
     """
-
     logger.info("Calculating bibliographic features...")
 
     n = len(df)
@@ -881,7 +911,7 @@ def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# 8. Historical citation features
+# 9. Historical citation features
 # ============================================================
 
 def calculate_historical_citation_features(
@@ -891,12 +921,12 @@ def calculate_historical_citation_features(
     Historical citation information only.
 
     For a paper published in Y:
-      velocity = cumulative cited_by counts through Y.
-      acceleration = log2((citations in Y + 1)/(citations in Y-1 + 1)).
+        velocity = cumulative cited_by counts through Y.
+        acceleration = log2((citations in Y + 1) /
+                            (citations in Y-1 + 1)).
 
     No Y+1 or later citation data is used.
     """
-
     logger.info("Calculating historical citation features...")
 
     n = len(df)
@@ -943,14 +973,86 @@ def calculate_historical_citation_features(
 
 
 # ============================================================
-# 9. Final builder
+# 10. Split construction
+# ============================================================
+
+def make_splits(
+    df: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Create train/valid/test indices.
+
+    Random mode:
+        stratified random split over papers, independent of publication year.
+
+    Temporal mode:
+        train <= TEMPORAL_TRAIN_END_YEAR
+        valid = (train_end, valid_end]
+        test  > valid_end
+    """
+    n = len(df)
+    all_indices = np.arange(n)
+
+    if SPLIT_MODE == "temporal":
+        years = pd.to_numeric(df["pub_year"], errors="coerce").to_numpy()
+
+        train_idx = np.flatnonzero(
+            np.isfinite(years)
+            & (years <= TEMPORAL_TRAIN_END_YEAR)
+        )
+
+        valid_idx = np.flatnonzero(
+            np.isfinite(years)
+            & (years > TEMPORAL_TRAIN_END_YEAR)
+            & (years <= TEMPORAL_VALID_END_YEAR)
+        )
+
+        test_idx = np.flatnonzero(
+            np.isfinite(years)
+            & (years > TEMPORAL_VALID_END_YEAR)
+        )
+
+        return train_idx, valid_idx, test_idx
+
+    if SPLIT_MODE != "random":
+        raise ValueError(
+            f"Unknown SPLIT_MODE={SPLIT_MODE!r}. "
+            "Use 'random' or 'temporal'."
+        )
+
+    target = df["target_emergence"].to_numpy()
+
+    train_idx, temp_idx = train_test_split(
+        all_indices,
+        test_size=VALID_SIZE + TEST_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=target,
+    )
+
+    relative_test_size = TEST_SIZE / (VALID_SIZE + TEST_SIZE)
+
+    valid_idx, test_idx = train_test_split(
+        temp_idx,
+        test_size=relative_test_size,
+        random_state=RANDOM_STATE,
+        stratify=target[temp_idx],
+    )
+
+    return (
+        np.sort(train_idx),
+        np.sort(valid_idx),
+        np.sort(test_idx),
+    )
+
+
+# ============================================================
+# 11. Feature builder
 # ============================================================
 
 def build_real_features(
     input_parquet_path: str,
     output_parquet_path: str,
 ) -> None:
-
     logger.info("Loading source dataset: %s", input_parquet_path)
 
     required_columns = [
@@ -985,13 +1087,86 @@ def build_real_features(
     # --------------------------------------------------------
     # Target
     # --------------------------------------------------------
+    #
+    # Target construction is allowed to use future data because it
+    # defines the historical ground truth. It is NEVER passed into
+    # feature calculations.
+    #
     df["target_emergence"] = calculate_esi_target(df)
+
+    # --------------------------------------------------------
+    # Split
+    # --------------------------------------------------------
+    train_idx, valid_idx, test_idx = make_splits(df)
+
+    split = np.full(len(df), "unused", dtype=object)
+    split[train_idx] = "train"
+    split[valid_idx] = "valid"
+    split[test_idx] = "test"
+
+    df["split"] = split
+
+    logger.info(
+        "Split sizes: train=%d (%.2f%%), valid=%d (%.2f%%), "
+        "test=%d (%.2f%%)",
+        len(train_idx),
+        100.0 * len(train_idx) / len(df),
+        len(valid_idx),
+        100.0 * len(valid_idx) / len(df),
+        len(test_idx),
+        100.0 * len(test_idx) / len(df),
+    )
+
+    for name, idx in (
+        ("train", train_idx),
+        ("valid", valid_idx),
+        ("test", test_idx),
+    ):
+        if len(idx):
+            rate = float(df.iloc[idx]["target_emergence"].mean())
+            years = pd.to_numeric(
+                df.iloc[idx]["pub_year"],
+                errors="coerce",
+            )
+            logger.info(
+                "%s: positives=%d (%.3f%%), years=%s-%s",
+                name,
+                int(df.iloc[idx]["target_emergence"].sum()),
+                100.0 * rate,
+                int(years.min()) if years.notna().any() else "NA",
+                int(years.max()) if years.notna().any() else "NA",
+            )
+
+    # --------------------------------------------------------
+    # Historical feature policy
+    # --------------------------------------------------------
+    #
+    # RANDOM:
+    #   Every split gets features calculated with TRAIN rows as the
+    #   only allowed historical source. This is intentionally strict:
+    #   VALID/TEST papers never enter TRAIN feature history, even if
+    #   they have an earlier publication year.
+    #
+    # TEMPORAL:
+    #   All prior-year papers are legitimate history.
+    #
+    if SPLIT_MODE == "random" and RANDOM_HISTORY_ONLY_TRAIN:
+        allowed_history_indices = train_idx
+    else:
+        allowed_history_indices = None
 
     # --------------------------------------------------------
     # 1. Dynamics
     # --------------------------------------------------------
-    topic_dyn = calculate_topic_dynamics(df)
-    author_dyn = calculate_author_features(df)
+    topic_dyn = calculate_topic_dynamics(
+        df,
+        allowed_history_indices=allowed_history_indices,
+    )
+
+    author_dyn = calculate_author_features(
+        df,
+        allowed_history_indices=allowed_history_indices,
+    )
 
     # --------------------------------------------------------
     # 2. Text / geometry
@@ -1016,20 +1191,26 @@ def build_real_features(
     text_features = calculate_temporal_text_features(
         df,
         text_matrix,
+        allowed_history_indices=allowed_history_indices,
     )
 
-    # Free the large sparse matrix before later feature calculations.
     del text_matrix
 
     # --------------------------------------------------------
     # 3. Graph / interdisciplinarity proxy
     # --------------------------------------------------------
-    graph_features = calculate_temporal_graph_features(df)
+    graph_features = calculate_temporal_graph_features(
+        df,
+        allowed_history_indices=allowed_history_indices,
+    )
 
     # --------------------------------------------------------
     # 4. Source / venue structure
     # --------------------------------------------------------
-    source_features = calculate_source_features(df)
+    source_features = calculate_source_features(
+        df,
+        allowed_history_indices=allowed_history_indices,
+    )
 
     # --------------------------------------------------------
     # 5. Bibliographic support
@@ -1054,21 +1235,32 @@ def build_real_features(
         citation_features,
     ]
 
-    feature_df = pd.concat(feature_frames, axis=1)
+    feature_df = pd.concat(
+        feature_frames,
+        axis=1,
+    )
 
     for column in feature_df.columns:
         if feature_df[column].dtype != np.int8:
-            feature_df[column] = pd.to_numeric(
-                feature_df[column],
-                errors="coerce",
-            ).fillna(0).astype(np.float32)
+            feature_df[column] = (
+                pd.to_numeric(
+                    feature_df[column],
+                    errors="coerce",
+                )
+                .fillna(0)
+                .astype(np.float32)
+            )
 
+    # --------------------------------------------------------
+    # Final dataset
+    # --------------------------------------------------------
     out_df = pd.concat(
         [
             df[
                 [
                     "doc_id",
                     "pub_year",
+                    "split",
                     "source_tier",
                     "commercial_maturity_index",
                     "has_ref_data",
@@ -1086,8 +1278,9 @@ def build_real_features(
     logger.info("Running sanity checks...")
 
     numeric_columns = [
-        c for c in out_df.columns
-        if c not in {"doc_id", "source_tier"}
+        c
+        for c in out_df.columns
+        if c not in {"doc_id", "source_tier", "split"}
     ]
 
     for column in numeric_columns:
@@ -1102,7 +1295,6 @@ def build_real_features(
                 column,
             )
 
-    # Features that should NOT be constant.
     inspect_columns = [
         "novelty_raw",
         "cluster_density",

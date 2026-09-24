@@ -1,0 +1,22 @@
+{
+  "start_year": 2017,
+  "end_year": 2026,
+  "training_end_year": 2023,
+  "engineering_min_share_of_physical": 0.25,
+  "total": 1000000,
+  "batch_size": 10000,
+  "seed": 20260923,
+  "workers": 4,
+  "requests_per_second": 15,
+  "max_requests_per_run": 100000,
+  "epsilon": 1e-8,
+  "data_dir": "new_data",
+  "corpus_filename": "openalex_corpus_1m.parquet",
+  "ml_split": {
+    "past_support_only": [2017, 2018, 2019],
+    "train": [2020, 2021],
+    "valid": [2022],
+    "test": [2023],
+    "target_support_only": [2024, 2025, 2026]
+  }
+}

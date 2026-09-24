@@ -1,0 +1,42 @@
+{
+  "rows": 967383,
+  "expected_rows": null,
+  "by_year": {
+    "2017": 100000,
+    "2018": 100000,
+    "2019": 100000,
+    "2020": 100000,
+    "2021": 100000,
+    "2022": 100000,
+    "2023": 100000,
+    "2024": 100000,
+    "2025": 96786,
+    "2026": 70597
+  },
+  "by_domain": {
+    "https://openalex.org/domains/1": 141875,
+    "https://openalex.org/domains/3": 389928,
+    "https://openalex.org/domains/2": 222618,
+    "https://openalex.org/domains/4": 212962
+  },
+  "engineering_by_year": {
+    "2017": 15475,
+    "2018": 15643,
+    "2019": 15286,
+    "2020": 13981,
+    "2021": 13580,
+    "2022": 13584,
+    "2023": 14258,
+    "2024": 15750,
+    "2025": 16209,
+    "2026": 13527
+  },
+  "targets": {
+    "None": 967383
+  },
+  "critical_nulls": {},
+  "duplicate_doc_ids": 0,
+  "invalid_future_targets": 0,
+  "training_end_year": 2023,
+  "passed": true
+}

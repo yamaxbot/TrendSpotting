@@ -46,10 +46,14 @@ def safe_metric(metric_fn, *args, default=np.nan):
 
 
 def split_temporal(df, X, y_target):
-    """Строгий временной split без пересечений."""
-    train = df["pub_year"] <= 2018
-    valid = (df["pub_year"] >= 2019) & (df["pub_year"] <= 2020)
-    test = (df["pub_year"] >= 2021) & (df["pub_year"] <= 2022)
+    """Строгий временной split: train 2020-21 | valid 2022 | test 2023.
+    2017-2019 / 2024-2026 — только support, в обучение не входят.
+    """
+    train = (df["pub_year"] >= 2020) & (df["pub_year"] <= 2021)
+    valid = df["pub_year"] == 2022
+    test = df["pub_year"] == 2023
+    if (df.loc[train, "pub_year"] < 2020).any():
+        raise ValueError("Refusing to train on past_support years (<2020)")
 
     for name, mask in [
         ("train", train),

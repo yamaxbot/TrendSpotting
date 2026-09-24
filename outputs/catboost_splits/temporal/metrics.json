@@ -1,0 +1,33 @@
+{
+  "experiment": "temporal",
+  "dataset": "C:\\Users\\sevam\\Desktop\\papers\\TrendSpotting\\download_dataset\\new_dataset\\new_data\\final_openalex_dataset.parquet",
+  "ml_years": "2020-2023",
+  "n_features": 24,
+  "threshold": 0.11822907495504222,
+  "validation": {
+    "threshold": 0.11822907495504222,
+    "roc_auc": 0.6242393277397345,
+    "pr_auc": 0.12876472453886473,
+    "precision": 0.15142057684029273,
+    "recall": 0.5619009584664537,
+    "f1": 0.23855544252288913,
+    "mcc": 0.13132512959006695,
+    "tn": 58444,
+    "fp": 31540,
+    "fn": 4388,
+    "tp": 5628
+  },
+  "test": {
+    "threshold": 0.11822907495504222,
+    "roc_auc": 0.6087762792567315,
+    "pr_auc": 0.1205511281878663,
+    "precision": 0.13546994884910485,
+    "recall": 0.508296681327469,
+    "f1": 0.2139251156920488,
+    "mcc": 0.0915337341005611,
+    "tn": 57545,
+    "fp": 32451,
+    "fn": 4919,
+    "tp": 5085
+  }
+}

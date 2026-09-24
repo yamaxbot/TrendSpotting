@@ -7,7 +7,7 @@ import seaborn as sns
 from scipy.stats import ks_2samp, spearmanr
 from sklearn.feature_selection import mutual_info_classif
 
-DATASET_PATH = "data/train_data/processed_ml_dataset.parquet"
+DATASET_PATH = "download_dataset/new_dataset/new_data/final_openalex_dataset.parquet"
 
 
 def run_full_eda(parquet_path: str):
