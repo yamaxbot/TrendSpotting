@@ -1,5 +1,81 @@
 {% extends 'base.html' %}
 {% block title %}{{ trend.name }} · ТрендСкан{% endblock %}
+{% block nav_search_class %}active{% endblock %}
 {% block content %}
-<section class="detail-wrap"><a class="back-link" href="{% url 'dashboard' %}?q={{ query|urlencode }}">← Все направления</a><div class="detail-top"><div><div class="eyebrow"><span class="area-tag {{ trend.color }}">{{ trend.area }}</span> <span class="signal-label">Сигнал #{{ trend.rank }}</span></div><h1>{{ trend.name }}</h1><p class="detail-lead">{{ trend.description }}</p></div><div class="confidence-card"><span>Уверенность модели</span><strong>{{ trend.confidence }}%</strong><div class="confidence-bar"><i style="width: {{ trend.confidence }}%"></i></div><small>CatBoost · baseline</small></div></div><div class="detail-layout"><div class="detail-main"><section class="detail-card"><div class="card-heading"><div><span class="eyebrow">Публикационная динамика</span><h2>{{ trend.years }}</h2></div><span class="growth-badge">{{ trend.direction }}</span></div></section><section class="detail-card"><div class="eyebrow">Почему это слабый сигнал</div><h2>{{ trend.signal }}</h2><div class="predictor-list">{% for predictor in trend.predictors %}<div><span>{{ forloop.counter|stringformat:'02d' }}</span><p>{{ predictor }}</p><b>+</b></div>{% endfor %}</div></section></div><aside class="detail-side"><section class="side-card"><div class="eyebrow">Паспорт направления</div><div class="side-row"><span>Область</span><strong>{{ trend.area }}</strong></div><div class="side-row"><span>Динамика</span><strong class="orange-text">{{ trend.direction }}</strong></div><div class="side-row"><span>Период</span><strong>{{ trend.period }}</strong></div><div class="side-row"><span>Источников</span><strong>{{ trend.sources|length }}</strong></div></section><section class="side-card sources-card"><div class="eyebrow">Исходная статья</div>{% for title, meta, url in trend.sources %}<a class="source-item" href="{{ url }}" target="_blank" rel="noreferrer"><span>↗</span><div><strong>{{ title }}</strong><small>{{ meta }}</small><small>Открыть оригинал →</small></div></a>{% endfor %}</section></aside></div></section>
+<section class="detail-wrap">
+  <a class="back-link" href="{% url 'dashboard' %}?q={{ query|urlencode }}">← Все направления</a>
+  <div class="detail-top">
+    <div>
+      <div class="eyebrow">Сигнал #{{ trend.rank }}</div>
+      <h1>{{ trend.name }}</h1>
+      <p class="detail-lead">{{ trend.description }}</p>
+    </div>
+    <div class="confidence-card">
+      <span>Оценка сигнала</span><strong>{{ trend.confidence }}%</strong>
+      <div class="confidence-bar"><i style="width: {{ trend.confidence }}%"></i></div>
+    </div>
+  </div>
+  <div class="detail-layout">
+    <div class="detail-main">
+      <section class="detail-card">
+        <div class="eyebrow">Суть исследования</div>
+        <div class="analysis-grid">
+          <div><h2>Задача</h2><p>{% if trend.problem != 'None' %}{{ trend.problem }}{% else %}Не указана в аннотации.{% endif %}</p></div>
+          <div><h2>Что предлагается</h2><p>{% if trend.advantage != 'None' %}{{ trend.advantage }}{% else %}Не указано в аннотации.{% endif %}</p></div>
+        </div>
+        {% if trend.companies %}<div class="company-affiliations"><span>Компании среди организаций авторов</span><p>{{ trend.companies|join:', ' }}</p></div>{% endif %}
+      </section>
+      <section class="detail-card">
+        <div class="eyebrow">Кейс-исследование</div>
+        <h2>{{ trend.original_title }}</h2>
+        <p class="analysis-copy">{% if trend.case_result != 'None' %}{{ trend.case_result }}{% else %}Конкретный результат не указан в аннотации.{% endif %}</p>
+        <a class="analysis-source" href="{{ trend.case_url }}" target="_blank" rel="noopener noreferrer">Открыть оригинал →</a>
+      </section>
+      <section class="detail-card">
+        <div class="eyebrow"{% if related.statistics_query %} title="{{ related.statistics_query }}"{% endif %}>Тематический поиск OpenAlex</div>
+        <h2>2023–2026</h2>
+        {% if timeline %}
+          <div class="publication-chart">
+            <svg viewBox="0 0 640 220" role="img" aria-label="Количество работ тематического поиска OpenAlex по годам с 2023 по 2026">
+              {% for tick in timeline.ticks %}
+                <line class="chart-gridline" x1="70" y1="{{ tick.y }}" x2="592" y2="{{ tick.y }}" />
+                <text class="publication-axis-value" x="50" y="{{ tick.y|add:'5' }}" text-anchor="end">{{ tick.value }}</text>
+              {% endfor %}
+              <polyline class="publication-line" points="{{ timeline.line }}" />
+              {% for point in timeline.points %}
+                <circle class="publication-point" cx="{{ point.x }}" cy="{{ point.y }}" r="5"><title>{{ point.tooltip }}</title></circle>
+                <text class="publication-year" x="{{ point.x }}" y="200" text-anchor="middle">{{ point.year }}</text>
+              {% endfor %}
+            </svg>
+          </div>
+        {% elif related %}
+          <p class="evidence-note">Не удалось получить годовую статистику OpenAlex для этой темы.</p>
+        {% elif related_state == 'failed' %}
+          <p class="evidence-note">Не удалось получить статистику OpenAlex. Обновите страницу, чтобы повторить поиск.</p>
+        {% else %}
+          <p class="evidence-note" data-evidence-status-url="{% url 'evidence_status' trend.slug %}?q={{ query|urlencode }}">Собираем публикации OpenAlex и проверяем совпадение с направлением…</p>
+        {% endif %}
+      </section>
+      <section class="detail-card">
+        <div class="eyebrow">Почему это слабый сигнал</div>
+        <h2>{{ trend.signal }}</h2>
+      </section>
+    </div>
+    <aside class="detail-side">
+      <section class="side-card">
+        <div class="eyebrow">Паспорт направления</div>
+        <div class="side-row"><span>Период анализа</span><strong>2023–2026</strong></div>
+        <div class="side-row"><span>Источников в карточке</span><strong>{{ trend.sources|length }}</strong></div>
+      </section>
+      <section class="side-card sources-card">
+        <div class="eyebrow">Исходная статья и строго связанные исследования</div>
+        {% for title, meta, url in trend.sources %}
+          <a class="source-item" href="{{ url }}" target="_blank" rel="noopener noreferrer">
+            <span>↗</span><div><strong>{{ title }}</strong><small>{{ meta }}</small><small class="source-link-label">Открыть оригинал →</small></div>
+          </a>
+        {% endfor %}
+      </section>
+    </aside>
+  </div>
+</section>
 {% endblock %}

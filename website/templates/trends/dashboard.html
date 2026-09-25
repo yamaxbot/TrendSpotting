@@ -1,5 +1,6 @@
 {% extends 'base.html' %}
 {% block title %}Поиск трендов · ТрендСкан{% endblock %}
+{% block nav_search_class %}active{% endblock %}
 {% block content %}
 <section class="dashboard-hero">
   <h1>Поиск слабых<br><em>сигналов</em> будущего</h1>
@@ -23,9 +24,9 @@
   <div class="metrics"><div><strong>{{ publication_count }}</strong><span>релевантных публикаций</span></div></div>
   {% if error %}<p>{{ error }}</p>{% endif %}
   {% if not trends %}<p>По этому запросу публикации не найдены.</p>{% endif %}
-  <div class="content-grid"><div class="trend-list"><div class="list-label">ТОП-15 направлений <span>По уверенности модели</span></div>
-    {% for trend in trends %}<a class="trend-card" href="{% url 'trend_detail' trend.slug %}?q={{ query|urlencode }}"><div class="rank">{{ trend.rank|stringformat:'02d' }}</div><div class="trend-main"><div class="trend-meta"><span class="area-tag {{ trend.color }}">{{ trend.area }}</span><span class="trend-state"><i></i>{{ trend.direction }}</span></div><h3>{{ trend.name }}</h3><p>{{ trend.description }}</p></div><div class="trend-confidence"><span>Уверенность</span><strong>{{ trend.confidence }}%</strong><div class="confidence-bar"><i style="width: {{ trend.confidence }}%"></i></div></div><span class="arrow">↗</span></a>{% endfor %}
-  </div><aside class="insight-panel"><div class="panel-top"><span class="panel-icon">◌</span><span>Сводка анализа</span></div><h3>Что происходит<br>в корпусе</h3><p>Модель нашла <b>{{ trends|length }} направлений</b>. Дополнительная аналитическая сводка: None.</p><div class="mini-chart"><div class="chart-grid"></div><div class="chart-axis"><span>None</span></div></div><div class="legend"><span><i class="legend-line"></i> Рост сигнала</span><span>None</span></div><div class="panel-foot"><span class="pulse"></span> Последнее обновление: None</div></aside></div>
+  <div class="trend-list"><div class="list-label">До 15 кандидатов в тренды <span>По оценке сигнала</span></div>
+    {% for trend in trends %}<a class="trend-card" href="{% url 'trend_detail' trend.slug %}?q={{ query|urlencode }}"><div class="rank">{{ trend.rank|stringformat:'02d' }}</div><div class="trend-main"><h3>{{ trend.name }}</h3><p>{{ trend.description }}</p></div><div class="trend-confidence"><span>Оценка сигнала</span><strong>{{ trend.confidence }}%</strong><div class="confidence-bar"><i style="width: {{ trend.confidence }}%"></i></div></div><span class="arrow">↗</span></a>{% endfor %}
+  </div>
 </section>
 {% endif %}
 {% endblock %}

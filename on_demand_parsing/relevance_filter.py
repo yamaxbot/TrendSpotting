@@ -1,10 +1,6 @@
-from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
+from on_demand_parsing.embedding_model import get_model
 
-
-model = SentenceTransformer(
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
 
 
 def score_relevance(query, works):
@@ -21,6 +17,7 @@ def score_relevance(query, works):
         texts.append(text)
 
     # Embedding запроса
+    model = get_model()
     query_embedding = model.encode(
         query
     )
@@ -63,8 +60,8 @@ def filter_relevant(
     if not works:
         return []
 
-    keep_count = int(
+    keep_count = max(1, int(
         len(works) * (1 - remove_ratio)
-    )
+    ))
 
     return works[:keep_count]

@@ -6,10 +6,10 @@ import requests
 from django.http import Http404, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET
-from . import jobs
+from . import charts, evidence, jobs, organizations
+from website.query_llm import ARTICLE_ANALYSIS_VERSION, TITLE_FORMAT_VERSION, clean_weak_signal
 
 logger = logging.getLogger(__name__)
-TITLE_FORMAT_VERSION = "exact-v1"
 
 
 def _valid_query(query):
@@ -33,22 +33,48 @@ def _dataset_is_ready(dataset_path: Path, corpus_path: Path) -> bool:
     required_columns = {
         "doc_id",
         "model_confidence",
+        "model_threshold",
+        "model_version",
+        "ranking_version",
         "diversity_max_similarity",
         "shap_values",
         "llm_title",
         "llm_title_version",
         "llm_description",
         "llm_weak_signal",
+        "llm_analysis_version",
+        "llm_problem",
+        "llm_advantage",
+        "llm_case_result",
     }
     try:
+        from website.main import MODEL_VERSION, RANKING_VERSION
+
         table = pq.read_table(dataset_path)
-        corpus = pq.read_table(corpus_path, columns=["doc_id", "pub_year"])
+        corpus = pq.read_table(corpus_path, columns=["doc_id", "pub_year", "title"])
         if not required_columns.issubset(table.column_names):
             return False
         title_versions = table["llm_title_version"].to_pylist()
+        model_versions = table["model_version"].to_pylist()
+        analysis_versions = table["llm_analysis_version"].to_pylist()
+        from website.query_llm import is_generic_weak_signal, is_valid_title, is_valid_weak_signal
+        titles_by_id = dict(zip(corpus["doc_id"].to_pylist(), corpus["title"].to_pylist()))
+        titles_ready = all(
+            is_valid_title(title, titles_by_id.get(doc_id))
+            for doc_id, title in zip(table["doc_id"].to_pylist(), table["llm_title"].to_pylist())
+        )
+        signals_ready = all(
+            is_valid_weak_signal(value) and not is_generic_weak_signal(value)
+            for value in table["llm_weak_signal"].to_pylist()
+        )
         return (
             table.num_rows <= 15
             and all(value == TITLE_FORMAT_VERSION for value in title_versions)
+            and all(value == MODEL_VERSION for value in model_versions)
+            and all(value == ARTICLE_ANALYSIS_VERSION for value in analysis_versions)
+            and all(value == RANKING_VERSION for value in table["ranking_version"].to_pylist())
+            and titles_ready
+            and signals_ready
             and dataset_path.stat().st_mtime_ns >= corpus_path.stat().st_mtime_ns
             and set(table["doc_id"].to_pylist()).issubset(set(corpus["doc_id"].to_pylist()))
         )
@@ -73,10 +99,12 @@ def _load_trends(
             "title",
             "abstract_text",
             "primary_topic",
+            "primary_topic_id",
             "doi",
             "article_url",
             "source_id",
             "pub_year",
+            "authorships_json",
         )
         if column in corpus.columns
     ]
@@ -84,93 +112,95 @@ def _load_trends(
     rows = predictions.merge(corpus, on="doc_id", how="left")
 
     if generate_llm_texts:
-        try:
-            from query_llm import (
-                explain_weak_signal,
-                summarize_abstract,
-                translate_article_title,
-            )
-        except ModuleNotFoundError as exc:
-            if exc.name != "query_llm":
-                raise
-            from website.query_llm import (
-                explain_weak_signal,
-                summarize_abstract,
-                translate_article_title,
-            )
-
-        translated_titles = []
-        descriptions = []
-        signal_explanations = []
-        for row_index, abstract_text in enumerate(
-            rows.get(
-                "abstract_text",
-                pd.Series([None] * len(rows)),
-            )
-        ):
-            original_title = rows.iloc[row_index].get("title")
-            try:
-                translated_titles.append(
-                    translate_article_title(original_title, abstract_text)
-                )
-            except (
-                KeyError,
-                IndexError,
-                TypeError,
-                RuntimeError, ValueError, AttributeError,
-                requests.RequestException,
-            ):
-                translated_titles.append("None")
-
-            if not isinstance(abstract_text, str) or not abstract_text.strip():
-                descriptions.append("None")
-                signal_explanations.append("None")
-                continue
-
-            try:
-                descriptions.append(summarize_abstract(abstract_text))
-            except (
-                KeyError,
-                IndexError,
-                TypeError,
-                RuntimeError, ValueError, AttributeError,
-                requests.RequestException,
-            ):
-                descriptions.append("None")
-
-            try:
-                signal_explanations.append(
-                    explain_weak_signal(
-                        abstract_text,
-                        rows.iloc[row_index].get("shap_values"),
-                    )
-                )
-            except (
-                KeyError,
-                IndexError,
-                TypeError,
-                RuntimeError, ValueError, AttributeError,
-                requests.RequestException,
-            ):
-                signal_explanations.append("None")
-
-        rows["llm_title"] = translated_titles
-        rows["llm_description"] = descriptions
-        rows["llm_weak_signal"] = signal_explanations
-
-        titles_by_id = dict(zip(rows["doc_id"], translated_titles))
-        descriptions_by_id = dict(zip(rows["doc_id"], descriptions))
-        signals_by_id = dict(zip(rows["doc_id"], signal_explanations))
-        predictions["llm_title"] = predictions["doc_id"].map(titles_by_id)
-        predictions["llm_title_version"] = TITLE_FORMAT_VERSION
-        predictions["llm_description"] = predictions["doc_id"].map(
-            descriptions_by_id
+        from website.query_llm import (
+            analyze_abstract,
+            fallback_weak_signal,
+            is_generic_weak_signal,
+            is_valid_description,
+            is_valid_title,
+            is_valid_weak_signal,
+            translate_article_title,
         )
-        predictions["llm_weak_signal"] = predictions["doc_id"].map(signals_by_id)
 
-        temporary_path = dataset_path.with_name(f".{dataset_path.name}.tmp")
-        predictions.to_parquet(temporary_path, index=False)
-        temporary_path.replace(dataset_path)
+        for column in (
+            "llm_title", "llm_title_version", "llm_description", "llm_weak_signal",
+            "llm_analysis_version", "llm_problem", "llm_advantage", "llm_case_result",
+        ):
+            if column not in predictions.columns:
+                predictions[column] = None
+
+        handled_errors = (
+            KeyError, IndexError, TypeError, RuntimeError, ValueError,
+            AttributeError, requests.RequestException,
+        )
+
+        def checkpoint():
+            temporary_path = dataset_path.with_name(f".{dataset_path.name}.tmp")
+            predictions.to_parquet(temporary_path, index=False)
+            temporary_path.replace(dataset_path)
+
+        for row_index, row in rows.iterrows():
+            original_title = row.get("title")
+            abstract_text = row.get("abstract_text")
+            title = row.get("llm_title")
+            description = row.get("llm_description")
+            signal = row.get("llm_weak_signal")
+            if not is_valid_title(title, original_title):
+                try:
+                    title = translate_article_title(original_title, abstract_text)
+                except handled_errors:
+                    title = original_title if isinstance(original_title, str) else "None"
+
+            needs_analysis = (
+                not is_valid_description(description, abstract_text)
+                or not is_valid_weak_signal(signal)
+                or is_generic_weak_signal(signal)
+                or any(
+                    not isinstance(row.get(field), str)
+                    for field in ("llm_problem", "llm_advantage", "llm_case_result")
+                )
+            )
+            if needs_analysis:
+                try:
+                    analysis = analyze_abstract(abstract_text, row.get("shap_values"))
+                except handled_errors:
+                    analysis = dict.fromkeys(
+                        ("summary", "problem", "advantage", "case_result", "weak_signal"),
+                        "None",
+                    )
+                description = analysis["summary"]
+                signal = analysis.get("weak_signal")
+            else:
+                analysis = {
+                    "problem": row.get("llm_problem"),
+                    "advantage": row.get("llm_advantage"),
+                    "case_result": row.get("llm_case_result"),
+                }
+
+            if not is_valid_weak_signal(signal):
+                signal = fallback_weak_signal(
+                    row.get("shap_values"), summary=description, title=title,
+                )
+            signal = clean_weak_signal(signal)
+
+            rows.at[row_index, "llm_title"] = title
+            rows.at[row_index, "llm_description"] = description
+            rows.at[row_index, "llm_weak_signal"] = signal
+            prediction_mask = predictions["doc_id"] == row["doc_id"]
+            for field, value in (
+                ("llm_problem", analysis["problem"]),
+                ("llm_advantage", analysis["advantage"]),
+                ("llm_case_result", analysis["case_result"]),
+            ):
+                rows.at[row_index, field] = value
+                predictions.loc[prediction_mask, field] = value
+            rows.at[row_index, "llm_analysis_version"] = ARTICLE_ANALYSIS_VERSION
+            predictions.loc[prediction_mask, "llm_title"] = title
+            predictions.loc[prediction_mask, "llm_title_version"] = TITLE_FORMAT_VERSION
+            predictions.loc[prediction_mask, "llm_description"] = description
+            predictions.loc[prediction_mask, "llm_weak_signal"] = signal
+            predictions.loc[prediction_mask, "llm_analysis_version"] = ARTICLE_ANALYSIS_VERSION
+            checkpoint()
 
     def display_value(value):
         if value is None or pd.isna(value) or value == "":
@@ -214,13 +244,22 @@ def _load_trends(
                 "rank": rank,
                 "slug": f"result-{rank}",
                 "doc_id": doc_id,
+                "original_title": original_title,
+                "abstract_text": row.get("abstract_text"),
+                "primary_topic_id": row.get("primary_topic_id"),
                 "name": title,
                 "area": display_value(row.get("primary_topic")),
                 "description": display_value(row.get("llm_description")),
+                "problem": display_value(row.get("llm_problem")),
+                "advantage": display_value(row.get("llm_advantage")),
+                "companies": organizations.company_names(row.get("authorships_json")),
+                "case_result": display_value(row.get("llm_case_result")),
+                "case_url": article_url,
                 "confidence": confidence,
+                "publication_year": publication_year,
                 "target_emergence": display_value(row.get("target_emergence")),
                 "direction": "None",
-                "signal": display_value(row.get("llm_weak_signal")),
+                "signal": display_value(clean_weak_signal(row.get("llm_weak_signal"))),
                 "color": "blue",
                 "years": "None",
                 "period": "None",
@@ -240,6 +279,16 @@ def _corpus_metrics(corpus_path: Path) -> tuple[int, str]:
     if years.empty:
         return len(corpus), "None"
     return len(corpus), f"{int(years.min())}—{int(years.max())}"
+
+
+@require_GET
+def how_it_works(request):
+    return render(request, "trends/how_it_works.html")
+
+
+@require_GET
+def about_project(request):
+    return render(request, "trends/about.html")
 
 
 @require_GET
@@ -308,7 +357,60 @@ def trend_detail(request, slug):
     trend = next((item for item in trends if item["slug"] == slug), None)
     if trend is None:
         raise Http404("Направление не найдено")
-    return render(request, "trends/detail.html", {"trend": trend, "query": query})
+
+    anchor = {
+        "doc_id": trend["doc_id"],
+        "title": trend["original_title"],
+        "abstract_text": trend["abstract_text"],
+        "pub_year": str(trend["publication_year"]),
+        "primary_topic_id": trend["primary_topic_id"],
+    }
+    related = evidence.load_cached(query, anchor)
+    related_state = "complete" if related else evidence.start(query, anchor)
+    timeline = (
+        charts.publication_timeline(related["years"])
+        if related and related.get("years") else None
+    )
+    if related:
+        if related.get("signal_text"):
+            trend["signal"] = related["signal_text"]
+        for item in related["sources"]:
+            meta = f"{item['date']} · {item['source_type']}"
+            if item.get("venue"):
+                meta += f" · {item['venue']}"
+            trend["sources"].append((item["title"], meta, _safe_url(item["url"])))
+    return render(request, "trends/detail.html", {
+        "trend": trend,
+        "query": query,
+        "related": related,
+        "timeline": timeline,
+        "related_state": related_state,
+    })
+
+
+@require_GET
+def evidence_status(request, slug):
+    query = request.GET.get("q", "").strip()
+    if not query or not _valid_query(query):
+        return JsonResponse({"status": "failed"}, status=400)
+    try:
+        from website.main import get_built_dataset_path, get_parsed_corpus_path
+        trends = _load_trends(
+            get_built_dataset_path(query), get_parsed_corpus_path(query)
+        )
+    except (OSError, ValueError, KeyError):
+        raise Http404("Результаты запроса не найдены")
+    trend = next((item for item in trends if item["slug"] == slug), None)
+    if trend is None:
+        raise Http404("Направление не найдено")
+    anchor = {
+        "doc_id": trend["doc_id"],
+        "title": trend["original_title"],
+        "primary_topic_id": trend["primary_topic_id"],
+    }
+    response = JsonResponse({"status": evidence.status(query, anchor)})
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 @require_GET

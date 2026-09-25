@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Как это работает · ТрендСкан{% endblock %}
+{% block nav_how_class %}active{% endblock %}
+{% block content %}
+<div class="info-page">
+  <section class="info-hero">
+    <div class="info-hero-copy">
+      <span class="info-kicker">Методология</span>
+      <h1>От запроса до проверяемого сигнала</h1>
+      <p>ТрендСкан помогает найти научные работы, которые могут указывать на развитие технологии, и показывает данные, на которых основана оценка.</p>
+      <a class="info-action" href="{% url 'dashboard' %}">Перейти к поиску <span aria-hidden="true">↗</span></a>
+    </div>
+    <div class="info-hero-mark" aria-hidden="true"><span>01</span><i></i><span>02</span><i></i><span>03</span><i></i><span>04</span></div>
+  </section>
+
+  <section class="info-section" aria-labelledby="steps-title">
+    <div class="info-section-heading"><span class="info-kicker">Процесс</span><h2 id="steps-title">Четыре шага анализа</h2><p>Каждый результат можно открыть и проверить по исходным публикациям.</p></div>
+    <div class="info-steps">
+      <article class="info-step"><span class="info-step-number">01</span><h3>Поиск публикаций</h3><p>По введённому направлению сервис собирает научные работы из OpenAlex за 2024–2026 годы.</p></article>
+      <article class="info-step"><span class="info-step-number">02</span><h3>Проверка соответствия</h3><p>Смысловая близость текста помогает отобрать работы по запросу. Похожие между собой статьи не должны занимать несколько мест в топе.</p></article>
+      <article class="info-step"><span class="info-step-number">03</span><h3>Прогноз тренда</h3><p>Каждый кандидат в тренды представлен опорной статьёй. Алгоритм оценивает её вместе с признаками тематического окружения и выбирает до 15 разных кандидатов.</p></article>
+      <article class="info-step"><span class="info-step-number">04</span><h3>Аналитика направления</h3><p>Проблема, преимущество и результат кейса извлекаются из аннотации опорной статьи. Связанные публикации за 2023–2026 годы формируют график и список источников.</p></article>
+    </div>
+  </section>
+
+  <section class="info-clarity" aria-labelledby="clarity-title">
+    <div><span class="info-kicker">Как читать результат</span><h2 id="clarity-title">От статьи к направлению</h2><p>Оценка сигнала строится по опорной статье и её научному окружению. График показывает число связанных публикаций по годам.</p></div>
+  </section>
+</div>
+{% endblock %}

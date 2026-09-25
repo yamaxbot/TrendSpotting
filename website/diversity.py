@@ -1,22 +1,12 @@
 """Semantic diversification for the final ranked list of publications."""
 
-from functools import lru_cache
-
 import numpy as np
 import pandas as pd
+from on_demand_parsing.embedding_model import MODEL_NAME as DEFAULT_MODEL_NAME
+from on_demand_parsing.embedding_model import get_model as _get_model
 
 
-DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_SIMILARITY_THRESHOLD = 0.78
-
-
-@lru_cache(maxsize=1)
-def _get_model():
-    # Loading sentence-transformers is intentionally delayed until a result set
-    # actually needs diversification. This keeps ordinary Django imports cheap.
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(DEFAULT_MODEL_NAME)
 
 
 def _article_text(row: pd.Series) -> str:
@@ -65,41 +55,45 @@ def select_diverse_top(
 
     # Articles entering this stage normally have an abstract. Keep the fallback
     # deterministic for incomplete records rather than failing the whole query.
-    texts = candidates["_semantic_text"].tolist()
-    embeddings = _get_model().encode(
-        texts,
-        batch_size=32,
-        show_progress_bar=False,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )
-    embeddings = np.asarray(embeddings, dtype=np.float32)
-    if embeddings.ndim != 2 or embeddings.shape[0] != len(candidates):
-        raise ValueError("embedding model returned an unexpected shape")
-
-    selected_positions: list[int] = []
+    model = _get_model()
+    selected_vectors: list[np.ndarray] = []
     selected_indices: list = []
     maximum_similarities: list[float] = []
     normalized_texts: set[str] = set()
 
-    for position, row in candidates.iterrows():
-        normalized_text = " ".join(row["_semantic_text"].lower().split())
-        if normalized_text and normalized_text in normalized_texts:
-            continue
+    # Preserve rank order, but stop embedding once enough distinct articles
+    # have been selected. A full corpus may contain thousands of candidates.
+    chunk_size = 64
+    for offset in range(0, len(candidates), chunk_size):
+        chunk = candidates.iloc[offset:offset + chunk_size]
+        embeddings = np.asarray(model.encode(
+            chunk["_semantic_text"].tolist(),
+            batch_size=32,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+        ), dtype=np.float32)
+        if embeddings.ndim != 2 or embeddings.shape[0] != len(chunk):
+            raise ValueError("embedding model returned an unexpected shape")
 
-        maximum_similarity = 0.0
-        if selected_positions:
-            similarities = embeddings[selected_positions] @ embeddings[position]
-            maximum_similarity = float(np.max(similarities))
-            if maximum_similarity > similarity_threshold:
+        for (_, row), vector in zip(chunk.iterrows(), embeddings):
+            normalized_text = " ".join(row["_semantic_text"].lower().split())
+            if normalized_text and normalized_text in normalized_texts:
                 continue
 
-        selected_positions.append(position)
-        selected_indices.append(row["_source_index"])
-        maximum_similarities.append(round(maximum_similarity, 6))
-        if normalized_text:
-            normalized_texts.add(normalized_text)
-        if len(selected_indices) == limit:
-            break
+            maximum_similarity = 0.0
+            if selected_vectors:
+                similarities = np.asarray(selected_vectors) @ vector
+                maximum_similarity = float(np.max(similarities))
+                if maximum_similarity > similarity_threshold:
+                    continue
+
+            selected_vectors.append(vector)
+            selected_indices.append(row["_source_index"])
+            maximum_similarities.append(round(maximum_similarity, 6))
+            if normalized_text:
+                normalized_texts.add(normalized_text)
+            if len(selected_indices) == limit:
+                return selected_indices, maximum_similarities
 
     return selected_indices, maximum_similarities

@@ -9,7 +9,16 @@ from catboost import CatBoostClassifier, Pool
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEBSITE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = PROJECT_ROOT / "education" / "catboost_model.cbm"
+MODEL_PATH = (
+    PROJECT_ROOT
+    / "outputs"
+    / "catboost_splits"
+    / "random"
+    / "catboost_model.cbm"
+)
+MODEL_METRICS_PATH = MODEL_PATH.with_name("metrics.json")
+MODEL_VERSION = "catboost-random-split-2026-09-v1"
+RANKING_VERSION = "intent-relevance-v1"
 
 # Позволяет запускать файл напрямую: python website/main.py
 if str(PROJECT_ROOT) not in sys.path:
@@ -37,9 +46,115 @@ def get_built_dataset_path(query: str) -> Path:
     )
 
 
+def model_dataset_is_ready(dataset_path: str | Path, corpus_path: str | Path) -> bool:
+    """Return whether model results can be reused while LLM text is repaired."""
+    dataset_path = Path(dataset_path)
+    corpus_path = Path(corpus_path)
+    if not dataset_path.is_file() or not corpus_path.is_file():
+        return False
+
+    import pyarrow.parquet as pq
+
+    required_columns = {
+        "doc_id",
+        "model_confidence",
+        "model_threshold",
+        "model_version",
+        "ranking_version",
+        "diversity_max_similarity",
+        "shap_values",
+    }
+    try:
+        dataset = pq.read_table(dataset_path)
+        corpus = pq.read_table(corpus_path, columns=["doc_id"])
+        return (
+            required_columns.issubset(dataset.column_names)
+            and dataset.num_rows <= 15
+            and all(
+                value == MODEL_VERSION
+                for value in dataset["model_version"].to_pylist()
+            )
+            and all(
+                value == RANKING_VERSION
+                for value in dataset["ranking_version"].to_pylist()
+            )
+            and dataset_path.stat().st_mtime_ns >= corpus_path.stat().st_mtime_ns
+            and set(dataset["doc_id"].to_pylist()).issubset(
+                set(corpus["doc_id"].to_pylist())
+            )
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _load_model_threshold() -> float:
+    if not MODEL_METRICS_PATH.is_file():
+        raise FileNotFoundError(f"Метрики модели не найдены: {MODEL_METRICS_PATH}")
+    try:
+        threshold = float(
+            json.loads(MODEL_METRICS_PATH.read_text(encoding="utf-8"))["threshold"]
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("В metrics.json отсутствует корректный threshold") from exc
+    if not 0 < threshold < 1:
+        raise ValueError("Threshold модели должен находиться между 0 и 1")
+    return threshold
+
+
+def _prepare_model_input(dataset: pd.DataFrame, model):
+    feature_names = model.feature_names_
+    dataset = dataset.copy()
+
+    # Эти относительные признаки создавались training-скриптом после общего
+    # preprocessing. На inference воспроизводим формулы обучения дословно.
+    if "pub_year" in dataset.columns and "doc_id" in dataset.columns:
+        year_totals = dataset.groupby("pub_year")["doc_id"].transform("count")
+        derived_shares = {
+            "topic_historical_share": "topic_historical_volume",
+            "topic_local_share": "topic_local_volume",
+            "historical_author_share": "historical_author_count",
+        }
+        for derived_feature, source_feature in derived_shares.items():
+            if source_feature in dataset.columns:
+                dataset[derived_feature] = (
+                    dataset[source_feature] / (year_totals + 1e-5)
+                )
+
+    if "commercial_maturity_index" in dataset.columns:
+        dataset["commercial_maturity_index"] = (
+            dataset["commercial_maturity_index"].fillna(-1.0)
+        )
+
+    # Модель random split обучалась с техническим полем split. Для production
+    # оно всегда имеет отдельное значение inference; важность этого признака в
+    # сохранённой модели равна нулю, но колонка нужна для совместимости схемы.
+    if "split" in feature_names and "split" not in dataset.columns:
+        dataset["split"] = "inference"
+
+    missing_features = [
+        feature for feature in feature_names if feature not in dataset.columns
+    ]
+    if missing_features:
+        raise ValueError(
+            "В датасете отсутствуют признаки модели: "
+            + ", ".join(missing_features)
+        )
+
+    model_input = dataset[feature_names].copy()
+    categorical_features = [
+        feature_names[index]
+        for index in model.get_cat_feature_indices()
+    ]
+    for feature in categorical_features:
+        model_input[feature] = model_input[feature].fillna("missing").astype(str)
+
+    return model_input, categorical_features
+
+
 def add_model_targets(
     dataset_path: str | Path,
     corpus_path: str | Path | None = None,
+    query: str | None = None,
 ) -> Path:
     """Добавить предсказания CatBoost и сохранить 15 лучших результатов."""
     dataset_path = Path(dataset_path).resolve()
@@ -54,6 +169,9 @@ def add_model_targets(
     if dataset.empty:
         dataset["target_emergence"] = pd.Series(dtype="int8")
         dataset["model_confidence"] = pd.Series(dtype="float64")
+        dataset["model_threshold"] = pd.Series(dtype="float64")
+        dataset["model_version"] = pd.Series(dtype="str")
+        dataset["ranking_version"] = pd.Series(dtype="str")
         dataset["diversity_max_similarity"] = pd.Series(dtype="float64")
         dataset["shap_values"] = pd.Series(dtype="str")
         dataset.to_parquet(dataset_path, index=False)
@@ -61,33 +179,24 @@ def add_model_targets(
 
     model = CatBoostClassifier()
     model.load_model(str(MODEL_PATH))
-
     feature_names = model.feature_names_
-    missing_features = [
-        feature for feature in feature_names if feature not in dataset.columns
-    ]
-    if missing_features:
-        raise ValueError(
-            "В датасете отсутствуют признаки модели: "
-            + ", ".join(missing_features)
-        )
-
-    model_input = dataset[feature_names].copy()
-    model_input["source_tier"] = (
-        model_input["source_tier"].fillna("other").astype(str)
-    )
-    predictions = model.predict(model_input).astype("int8").ravel()
+    model_input, categorical_features = _prepare_model_input(dataset, model)
     probabilities = model.predict_proba(model_input)
     positive_class_index = list(model.classes_).index(1)
+    positive_probabilities = probabilities[:, positive_class_index]
+    model_threshold = _load_model_threshold()
 
-    dataset["target_emergence"] = predictions
-    dataset["model_confidence"] = (
-        probabilities[:, positive_class_index] * 100
-    )
+    dataset["target_emergence"] = (
+        positive_probabilities >= model_threshold
+    ).astype("int8")
+    dataset["model_confidence"] = positive_probabilities * 100
+    dataset["model_threshold"] = model_threshold
+    dataset["model_version"] = MODEL_VERSION
+    dataset["ranking_version"] = RANKING_VERSION
     if corpus_path is None:
         text_columns = [
             column
-            for column in ("doc_id", "title", "abstract_text")
+            for column in ("doc_id", "title", "abstract_text", "work_type")
             if column in dataset.columns
         ]
         article_texts = dataset[text_columns].copy()
@@ -95,25 +204,54 @@ def add_model_targets(
         corpus_path = Path(corpus_path).resolve()
         if not corpus_path.is_file():
             raise FileNotFoundError(f"Корпус не найден: {corpus_path}")
+        import pyarrow.parquet as pq
+        corpus_columns = ["doc_id", "title", "abstract_text"]
+        if "work_type" in pq.read_schema(corpus_path).names:
+            corpus_columns.append("work_type")
         article_texts = pd.read_parquet(
             corpus_path,
-            columns=["doc_id", "title", "abstract_text"],
+            columns=corpus_columns,
         )
 
     from website.diversity import select_diverse_top
+    from website.article_type import is_review_article
 
-    top_indices, maximum_similarities = select_diverse_top(
-        dataset,
-        article_texts,
-        limit=15,
-    )
+    primary_articles = article_texts.loc[
+        ~article_texts.apply(
+            lambda row: is_review_article(row.get("title"), row.get("work_type")),
+            axis=1,
+        ),
+        "doc_id",
+    ]
+    eligible_dataset = dataset[dataset["doc_id"].isin(primary_articles)]
+
+    if query and query.strip():
+        from website.relevance_gate import select_relevant_diverse_top
+
+        top_indices, maximum_similarities = select_relevant_diverse_top(
+            eligible_dataset,
+            article_texts,
+            query.strip(),
+            dataset_path.with_name(f"{dataset_path.stem}.relevance.json"),
+            limit=15,
+        )
+    else:
+        top_indices, maximum_similarities = select_diverse_top(
+            eligible_dataset,
+            article_texts,
+            limit=15,
+        )
     dataset = dataset.loc[top_indices].copy()
     dataset["model_confidence"] = dataset["model_confidence"].round(2)
     dataset["diversity_max_similarity"] = maximum_similarities
+    if dataset.empty:
+        dataset["shap_values"] = pd.Series(dtype="str")
+        dataset.to_parquet(dataset_path, index=False)
+        return dataset_path
     top_model_input = model_input.loc[top_indices]
 
     shap_values = model.get_feature_importance(
-        Pool(top_model_input, cat_features=["source_tier"]),
+        Pool(top_model_input, cat_features=categorical_features),
         type="ShapValues",
     )
     shap_values = shap_values[:, :-1]
@@ -166,13 +304,24 @@ def build_dataset_for_query(query: str) -> Path:
             "doc_id",
             "target_emergence",
             "model_confidence",
+            "model_threshold",
+            "model_version",
+            "ranking_version",
             "diversity_max_similarity",
             "shap_values",
+            "llm_title",
+            "llm_title_version",
+            "llm_description",
+            "llm_weak_signal",
+            "llm_analysis_version",
+            "llm_problem",
+            "llm_advantage",
+            "llm_case_result",
         ]).to_parquet(output_path, index=False)
         return output_path
 
     build_real_features(str(source_path), str(output_path))
-    return add_model_targets(output_path, source_path)
+    return add_model_targets(output_path, source_path, query=query)
 
 
 if __name__ == "__main__":

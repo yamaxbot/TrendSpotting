@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block title %}О проекте · ТрендСкан{% endblock %}
+{% block nav_about_class %}active{% endblock %}
+{% block content %}
+<div class="info-page">
+  <section class="info-hero info-hero-about">
+    <div class="info-hero-copy">
+      <span class="info-kicker">О проекте</span>
+      <h1>Замечать технологические изменения раньше</h1>
+      <p>ТрендСкан — сервис поиска ранних научно-технологических сигналов, созданный в рамках задачи хакатона Газпромбанк.Тех.</p>
+      <a class="info-action" href="{% url 'dashboard' %}">Попробовать поиск <span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+
+  <section class="info-section info-about-grid" aria-labelledby="purpose-title">
+    <div class="info-section-heading"><span class="info-kicker">Идея</span><h2 id="purpose-title">Помощник для первого анализа</h2><p>Сервис сокращает время просмотра научной литературы и помогает выбрать направления, которые стоит изучить глубже.</p></div>
+    <div class="info-fact-grid">
+      <article class="info-fact"><span class="info-fact-icon" aria-hidden="true">⌕</span><h3>Открытые данные</h3><p>Основа поиска — научные публикации и метаданные OpenAlex. В карточках доступны ссылки на исходные исследования.</p></article>
+      <article class="info-fact"><span class="info-fact-icon" aria-hidden="true">✧</span><h3>Машинное обучение</h3><p>Каждый кандидат в тренды оценивается по опорной статье и признакам её научного окружения. Анализ текста помогает убрать смысловые повторы.</p></article>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

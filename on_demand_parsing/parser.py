@@ -7,6 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from on_demand_parsing.query_normalizer import normalize_query
+from on_demand_parsing.query_recovery import recover_seed_works
 from on_demand_parsing.openalex_client import search_works
 from on_demand_parsing.topic_discovery import discover_topics
 from on_demand_parsing.topic_scoring import score_topics, select_topics
@@ -35,6 +36,7 @@ STRINGS = [
     "pub_date",
     "title",
     "abstract_text",
+    "work_type",
     "source_tier",
     "primary_topic",
     "primary_topic_id",
@@ -206,6 +208,7 @@ def make_parquet_record(work, query):
 
         "title": work.get("title"),
         "abstract_text": work.get("abstract"),
+        "work_type": work_type,
 
         "source_tier": source_tier,
 
@@ -344,6 +347,11 @@ def run_parser(user_query, years=PARSING_YEARS):
         len(seed_works)
     )
 
+    recovered_seed = not seed_works
+    if recovered_seed:
+        seed_works = recover_seed_works(query, years, search_works)
+        print("Recovered seed works:", len(seed_works))
+
     # 3. Topic Discovery
 
     if not seed_works:
@@ -395,6 +403,7 @@ def run_parser(user_query, years=PARSING_YEARS):
             selected_topics,
             query,
             years,
+            seed_works=seed_works,
         )
     )
 
@@ -415,7 +424,6 @@ def run_parser(user_query, years=PARSING_YEARS):
         work
         for work in normalized_works
         if work.get("abstract")
-        and work.get("referenced_works_ids")
     ]
 
     print("\nNORMALIZATION:")
@@ -424,7 +432,7 @@ def run_parser(user_query, years=PARSING_YEARS):
         len(normalized_works)
     )
     print(
-        "Removed without abstract or references:",
+        "Removed without abstract:",
         before_quality_filter - len(normalized_works),
     )
 
@@ -434,6 +442,20 @@ def run_parser(user_query, years=PARSING_YEARS):
         query,
         normalized_works
     )
+
+    if recovered_seed and scored_works:
+        recovered_ids = {work["id"] for work in seed_works}
+        seed_scores = [
+            work["relevance"] for work in scored_works
+            if work.get("id") in recovered_ids
+        ]
+        if seed_scores:
+            minimum_relevance = min(seed_scores)
+            scored_works = [
+                work for work in scored_works
+                if work["relevance"] >= minimum_relevance
+            ]
+            print("Recovery relevance floor:", f"{minimum_relevance:.3f}")
 
     clean_works = filter_relevant(
         scored_works,

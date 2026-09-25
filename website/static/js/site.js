@@ -87,6 +87,33 @@ document.addEventListener('DOMContentLoaded', () => {
       poll();
     }
   });
+
+  const evidenceNotice = document.querySelector('[data-evidence-status-url]');
+  const evidenceUrl = evidenceNotice?.dataset.evidenceStatusUrl;
+  if (evidenceUrl) {
+    const pollEvidence = async () => {
+      try {
+        const response = await fetch(evidenceUrl, {
+          cache: 'no-store', signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) throw new Error('evidence status unavailable');
+        const result = await response.json();
+        if (result.status === 'complete') {
+          window.location.reload();
+          return;
+        }
+        if (result.status === 'failed') {
+          evidenceNotice.textContent = 'Не удалось получить статистику OpenAlex. Обновите страницу, чтобы повторить поиск.';
+          return;
+        }
+      } catch (error) {
+        evidenceNotice.textContent = 'Проверяем связь с OpenAlex…';
+      }
+      window.setTimeout(pollEvidence, 3000);
+    };
+    window.setTimeout(pollEvidence, 3000);
+  }
+
   window.addEventListener('pagehide', () => {
     stopped = true;
     window.clearTimeout(timer);

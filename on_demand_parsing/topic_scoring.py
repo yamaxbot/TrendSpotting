@@ -1,10 +1,6 @@
-from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import cos_sim
+from on_demand_parsing.embedding_model import get_model
 
-
-model = SentenceTransformer(
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
 
 
 def score_topics(query, topics):
@@ -12,6 +8,7 @@ def score_topics(query, topics):
         return []
     names = list(topics.keys())
 
+    model = get_model()
     query_embedding = model.encode(query)
     topic_embeddings = model.encode(names)
 

@@ -14,14 +14,22 @@ _jobs = {}
 
 
 def _run(query):
-    from website.main import build_dataset_for_query, get_parsed_corpus_path
+    from website.main import (
+        build_dataset_for_query,
+        get_built_dataset_path,
+        get_parsed_corpus_path,
+        model_dataset_is_ready,
+    )
     from .views import _load_trends
 
     with _lock:
         _jobs[query] = "running"
     try:
-        path = build_dataset_for_query(query)
-        _load_trends(path, get_parsed_corpus_path(query), generate_llm_texts=True)
+        corpus_path = get_parsed_corpus_path(query)
+        path = get_built_dataset_path(query)
+        if not model_dataset_is_ready(path, corpus_path):
+            path = build_dataset_for_query(query)
+        _load_trends(path, corpus_path, generate_llm_texts=True)
     except Exception:
         logger.exception("Search processing failed")
         state = "failed"
