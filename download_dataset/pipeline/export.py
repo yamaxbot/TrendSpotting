@@ -62,7 +62,6 @@ def export(config: dict) -> Path | None:
     root = Path(config["data_dir"])
     directory = root / "batches"
     directory.mkdir(exist_ok=True)
-    # A partial export is never presented under the final 1m filename.
     output = root / ("openalex_corpus_1m.parquet" if count == config["total"] == 1000000
                      else "openalex_corpus_partial.parquet")
     temporary = output.with_suffix(".parquet.tmp")

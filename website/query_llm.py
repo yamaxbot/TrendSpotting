@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 
@@ -14,7 +15,12 @@ TITLE_FORMAT_VERSION = "exact-v2"
 ARTICLE_ANALYSIS_VERSION = "grounded-v2"
 ABSTRACT_MAX_CHARACTERS = 5000
 MAX_LLM_ATTEMPTS = 2
+MAX_ARTICLE_ANALYSIS_ATTEMPTS = 3
 RELATED_ABSTRACT_MAX_CHARACTERS = 1600
+logger = logging.getLogger(__name__)
+SCIENTIFIC_UNITS = re.compile(
+    r"(?<![А-Яа-яЁё])(?:[кмнгдпс]?(?:Гц|Вт|В|А|Па|Дж|Тл|Ом|См|С)|[кМ]?эВ)(?![А-Яа-яЁё])"
+)
 
 RELATED_SIGNAL_PROMPT = """По аннотациям нескольких строго связанных научных работ напиши по-русски, почему их общая тема может быть слабым технологическим сигналом. Найди конкретный новый метод, применение или сдвиг относительно прежнего подхода, подтверждённый минимум двумя связанными работами. Не называй само совпадение тем или количество работ открытием. Не утверждай, что технология впервые появилась, редка, растёт, внедрена или поддержана компаниями, если аннотации этого не доказывают. Не добавляй прогнозы и вымышленные результаты. Если конкретного общего наблюдения нет, верни {"signal":"None","supporting_ids":[]}.
 Иначе верни только JSON {"signal":"2–3 содержательных предложения; четвёртое лишь если добавляет факт, не более 90 слов","supporting_ids":["id связанной работы 1","id связанной работы 2"]}. В тексте сначала назови конкретное наблюдение, затем его возможное значение; избегай общих фраз и слов «модель», «SHAP», «признаки». Указывай только id работ, действительно подтверждающих главный тезис."""
@@ -118,14 +124,20 @@ def has_corrupt_text(value):
     """Detect common truncation, encoding and token-splicing artifacts."""
     if not isinstance(value, str) or not value.strip():
         return True
-    return any(
-        re.search(pattern, value.strip())
+    text = SCIENTIFIC_UNITS.sub("", value.strip())
+    if any(
+        re.search(pattern, text)
         for pattern in (
             r"\ufffd",
-            r"[а-яё][А-ЯЁ]",
             r"[.!?][а-яё]",
             r"[А-Яа-яЁё][A-Za-z]|[A-Za-z][А-Яа-яЁё]",
         )
+    ):
+        return True
+    return any(
+        re.search(r"[а-яё][А-ЯЁ]", word.group())
+        and not re.match(r"[А-ЯЁ]", word.group())
+        for word in re.finditer(r"[А-ЯЁа-яё]+", text)
     )
 
 
@@ -302,16 +314,22 @@ def analyze_abstract(abstract_text, shap_values=None):
         "abstract": _compact_abstract(abstract_text),
         "positive_factors": [factor["фактор"] for factor in factors],
     }, ensure_ascii=False, separators=(",", ":"))
-    for _ in range(MAX_LLM_ATTEMPTS):
+    for attempt in range(1, MAX_ARTICLE_ANALYSIS_ATTEMPTS + 1):
         try:
-            return _parse_article_analysis(_query_llm(
+            analysis = _parse_article_analysis(_query_llm(
                 ARTICLE_ANALYSIS_PROMPT,
                 content,
-                max_tokens=380,
+                max_tokens=500,
                 temperature=0.0,
             ))
-        except (ValueError, json.JSONDecodeError):
-            continue
+            if not is_valid_description(analysis["summary"], abstract_text):
+                raise ValueError("Article analysis has no valid summary")
+            return analysis
+        except (ValueError, RuntimeError, requests.RequestException) as exc:
+            logger.warning(
+                "Article analysis attempt %s/%s failed: %s: %s",
+                attempt, MAX_ARTICLE_ANALYSIS_ATTEMPTS, type(exc).__name__, exc,
+            )
     return empty
 
 
@@ -373,15 +391,22 @@ def translate_article_title(title, abstract_text=""):
     if not isinstance(title, str) or not title.strip():
         return "None"
     source_title = title.strip()
-    for _ in range(MAX_LLM_ATTEMPTS):
-        result = _clean_title(
-            _query_llm(
-                TITLE_TRANSLATION_PROMPT,
-                source_title,
-                max_tokens=160,
-                temperature=0.0,
+    for attempt in range(1, MAX_LLM_ATTEMPTS + 1):
+        try:
+            result = _clean_title(
+                _query_llm(
+                    TITLE_TRANSLATION_PROMPT,
+                    source_title,
+                    max_tokens=160,
+                    temperature=0.0,
+                )
             )
-        )
+        except (RuntimeError, ValueError, requests.RequestException) as exc:
+            logger.warning(
+                "Title translation attempt %s/%s failed: %s",
+                attempt, MAX_LLM_ATTEMPTS, type(exc).__name__,
+            )
+            continue
         if is_valid_title(result, source_title):
             return result
     return source_title

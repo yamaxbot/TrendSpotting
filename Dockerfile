@@ -27,5 +27,4 @@ USER app
 WORKDIR /app/website
 EXPOSE 8000
 
-# Search/evidence jobs are in-process; keep a single worker until a shared queue exists.
 CMD ["gunicorn", "trendspotting.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-"]

@@ -2,7 +2,6 @@ import json
 import os
 
 
-# Папка, внутри которой будут создаваться output1, output2, ...
 OUTPUT_DIR = r"logics"
 
 

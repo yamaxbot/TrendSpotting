@@ -63,7 +63,6 @@ def export(config: dict) -> Path | None:
     directory = root / "batches"
     directory.mkdir(exist_ok=True)
     final_name = config.get("corpus_filename", "openalex_corpus_5m.parquet")
-    # A partial export is never presented under the final corpus filename.
     output = root / (final_name if count == config["total"] else "openalex_corpus_partial.parquet")
     temporary = output.with_suffix(".parquet.tmp")
     cursor = connection.execute("SELECT payload FROM documents ORDER BY rowid")
@@ -120,7 +119,6 @@ def validate(path: Path, expected: int | None = None, training_end_year: int = 2
             if record["is_engineering"]:
                 engineering[str(year)] += 1
             targets[str(record["target_emergence"])] += 1
-            # Pipeline labels must not exist past the last ML year (support years are target-only).
             invalid_targets += year > training_end_year and record["target_emergence"] is not None
     result = {"rows": rows, "expected_rows": expected, "by_year": dict(sorted(years.items())),
               "by_domain": dict(domains), "engineering_by_year": dict(engineering),

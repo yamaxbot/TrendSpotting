@@ -41,7 +41,6 @@ def split_temporal_strict(df, X):
     valid_mask = df["pub_year"] == 2022
     test_mask = df["pub_year"] == 2023
 
-    # Проверка на утечку старых лет
     if (df.loc[train_mask, "pub_year"] < 2020).any():
         raise ValueError(
             "ОШИБКА: Попытка затянуть 2017-2019 года в обучающую выборку!"
@@ -202,7 +201,6 @@ def main():
     df["pub_year"] = df["pub_year"].astype(np.int32)
     df["target_emergence"] = df["target_emergence"].astype(np.int8)
 
-    # 1.1. Относительные доли
     year_totals = df.groupby("pub_year")["doc_id"].transform("count")
     if "topic_historical_volume" in df.columns:
         df["topic_historical_share"] = df["topic_historical_volume"] / (
@@ -215,18 +213,15 @@ def main():
             year_totals + 1e-5
         )
 
-    # 1.2. Обработка пропусков
     if "commercial_maturity_index" in df.columns:
         df["commercial_maturity_index"] = df["commercial_maturity_index"].fillna(-1.0)
 
-    # 1.3. Исключаем строго константы и 100% дубли
     drop_features = {
-        "has_ref_data",  # Константа = 1
-        "has_reference_list",  # Константа = 1
-        "topic_centroid_similarity",  # Дубль novelty_raw (rho = -1.0)
-        "topic_domain_rarity",  # Дубль topic_local_volume (rho = -1.0)
-        "topic_domain_age_years",  # Дубль topic_age_years (rho = 1.0)
-        # Абсолютные счетчики выкидываем, так как есть относительные *_share
+        "has_ref_data",
+        "has_reference_list",
+        "topic_centroid_similarity",
+        "topic_domain_rarity",
+        "topic_domain_age_years",
         "topic_historical_volume",
         "topic_local_volume",
         "historical_author_count",
@@ -268,10 +263,9 @@ def main():
         learning_rate=0.02,
         depth=4,
         l2_leaf_reg=15.0,
-        rsm=0.8,  # colsample_bylevel: берем 80% фич на каждый сплит
+        rsm=0.8,
         subsample=0.8,
         random_seed=SEED,
-        # auto_class_weights УБРАН - сохраняем реальное распределение
         loss_function="Logloss",
         eval_metric="Logloss",
         od_type="Iter",
@@ -319,7 +313,6 @@ def main():
     gain_df.to_csv(out / "feature_importance_gain.csv", index=False)
     print(gain_df.to_string(index=False))
 
-    # SHAP
     rng = np.random.default_rng(SEED)
     Xshap = (
         Xte.iloc[rng.choice(len(Xte), args.shap_sample, replace=False)].copy()
@@ -340,7 +333,6 @@ def main():
     )
     shap_df.to_csv(out / "shap_importance.csv", index=False)
 
-    # Сохранение результатов
     metrics = {
         "dataset": str(Path(args.dataset).resolve()),
         "train_years": "2020-2021",

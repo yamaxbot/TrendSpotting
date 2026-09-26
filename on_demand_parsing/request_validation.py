@@ -5,7 +5,6 @@ import requests
 from dotenv import load_dotenv
 
 
-# Загружаем .env из корня проекта TrendSpotting
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(ENV_PATH)
 

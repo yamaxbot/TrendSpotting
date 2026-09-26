@@ -11,23 +11,15 @@ import scipy.sparse
 from sklearn.feature_extraction.text import HashingVectorizer
 
 
-# ============================================================
-# Configuration
-# ============================================================
-
 PAST_WINDOW_YEARS = 3
 FUTURE_WINDOW_YEARS = 3
 
-# Historical emergence label:
-# compare Y-3..Y-1 with Y+1..Y+3.
 ESI_QUANTILE = 0.90
 MIN_FUTURE_VOLUME = 3
 SMOOTHING = 5.0
 
-# Text representation.
 TEXT_N_FEATURES = 2000
 
-# Robust clipping for a few heavy-tailed dynamic features.
 LOG_GROWTH_CLIP = 5.0
 
 INPUT_PATH = "download_dataset/new_dataset/new_data/openalex_corpus_1m.parquet"
@@ -40,10 +32,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ============================================================
-# Parsing helpers
-# ============================================================
 
 def parse_json_list(value: Any) -> list:
     """Safely parse a JSON/list-like OpenAlex field."""
@@ -95,10 +83,6 @@ def safe_len_json_list(value: Any) -> int:
     return len(parse_json_list(value))
 
 
-# ============================================================
-# 1. Historical target
-# ============================================================
-
 def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
     """
     Historical emergence proxy.
@@ -128,7 +112,6 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
 
     topic_year_counts = work.groupby(["topic", "year"]).size().to_dict()
 
-    # Compute one growth value per (topic, year), then map it back to papers.
     keys = []
     for topic, year in zip(topics, years):
         if pd.isna(topic) or pd.isna(year):
@@ -203,10 +186,6 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
     return result
 
 
-# ============================================================
-# 2. Topic publication dynamics
-# ============================================================
-
 def calculate_topic_dynamics(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -278,10 +257,6 @@ def calculate_topic_dynamics(
         index=df.index,
     )
 
-
-# ============================================================
-# 3. Author dynamics
-# ============================================================
 
 def calculate_author_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -356,10 +331,6 @@ def calculate_author_features(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-# ============================================================
-# 4. Temporal text geometry
-# ============================================================
-
 def calculate_temporal_text_features(
     df: pd.DataFrame,
     text_matrix: scipy.sparse.csr_matrix,
@@ -407,11 +378,9 @@ def calculate_temporal_text_features(
     nearest_similarity = np.zeros(n, dtype=np.float32)
     cross_gap = np.zeros(n, dtype=np.float32)
 
-    # Historical topic statistics
     topic_sum: dict[Any, np.ndarray] = {}
     topic_count: defaultdict[Any, int] = defaultdict(int)
 
-    # Only valid years
     valid_years = np.sort(
         np.unique(years[~np.isnan(years)]).astype(np.int32)
     )
@@ -423,9 +392,6 @@ def calculate_temporal_text_features(
         if len(current) == 0:
             continue
 
-        # ------------------------------------------------------------
-        # Group current papers by topic
-        # ------------------------------------------------------------
         topic_to_indices: defaultdict[Any, list[int]] = defaultdict(list)
 
         for idx in current:
@@ -437,9 +403,6 @@ def calculate_temporal_text_features(
         if not topic_to_indices:
             continue
 
-        # ------------------------------------------------------------
-        # Build historical centroid matrix ONCE for this year
-        # ------------------------------------------------------------
         historical_topics = []
         centroid_vectors = []
         centroid_norms = []
@@ -464,7 +427,6 @@ def calculate_temporal_text_features(
                 dtype=np.float32,
             )
 
-            # O(1) topic -> centroid column lookup
             centroid_pos = {
                 topic: i
                 for i, topic in enumerate(historical_topics)
@@ -473,14 +435,10 @@ def calculate_temporal_text_features(
             centroid_matrix = None
             centroid_pos = {}
 
-        # ------------------------------------------------------------
-        # Own-topic geometry
-        # ------------------------------------------------------------
         for topic, indices in topic_to_indices.items():
             count = topic_count[topic]
 
             if count <= 0:
-                # No historical support for this topic
                 continue
 
             raw = topic_sum[topic] / count
@@ -513,27 +471,14 @@ def calculate_temporal_text_features(
                 2.0,
             )
 
-        # ------------------------------------------------------------
-        # Cross-topic geometry
-        #
-        # One matrix multiplication for the WHOLE year instead
-        # of one multiplication per topic.
-        # ------------------------------------------------------------
         if centroid_matrix is not None and len(centroid_matrix) >= 2:
 
             rows = text_matrix[current]
 
-            # shape:
-            #   n_current × n_historical_topics
             similarities = np.asarray(
                 rows @ centroid_matrix.T
             )
 
-            # Remove each paper's own topic from nearest-topic search.
-            #
-            # This is much faster than:
-            # centroid_topics.index(topic)
-            # for every topic.
             own_positions = np.full(
                 len(current),
                 -1,
@@ -574,14 +519,10 @@ def calculate_temporal_text_features(
                 own_similarity[current] - nearest
             )
 
-        # ------------------------------------------------------------
-        # Update history AFTER all feature calculations
-        # ------------------------------------------------------------
         for topic, indices in topic_to_indices.items():
 
             rows = text_matrix[indices]
 
-            # One dense vector per topic, not per paper
             summed = np.asarray(rows.sum(axis=0)).ravel().astype(np.float32)
 
             if topic in topic_sum:
@@ -592,19 +533,11 @@ def calculate_temporal_text_features(
             topic_count[topic] += len(indices)
 
 
-    # ================================================================
-    # Outlier detection
-    # ================================================================
     outlier = np.zeros(
         n,
         dtype=np.int8,
     )
 
-    # Keep exactly the original semantics:
-    # threshold for year Y = 95th percentile of ALL papers before Y.
-    #
-    # Instead of constructing `years < year` every time, use a
-    # cumulative list of previous-year indices.
     previous_indices = []
 
     for year in valid_years:
@@ -638,10 +571,6 @@ def calculate_temporal_text_features(
         index=df.index,
     )
 
-
-# ============================================================
-# 5. Temporal topic-domain structure
-# ============================================================
 
 def calculate_temporal_graph_features(
     df: pd.DataFrame,
@@ -756,10 +685,6 @@ def calculate_temporal_graph_features(
     )
 
 
-# ============================================================
-# 6. Venue / source structure
-# ============================================================
-
 def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Historical publication-source structure.
@@ -791,7 +716,6 @@ def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
     for year in valid_years:
         current = np.flatnonzero(years == year)
 
-        # Historical source counts for each topic.
         topic_to_sources: defaultdict[Any, set] = defaultdict(set)
 
         for idx in current:
@@ -822,7 +746,6 @@ def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
 
             topic_to_sources[topic].add(source)
 
-        # Update historical source state.
         for topic, source_set in topic_to_sources.items():
             topic_year_sources[topic].update(source_set)
 
@@ -844,10 +767,6 @@ def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
         index=df.index,
     )
 
-
-# ============================================================
-# 7. Bibliographic support
-# ============================================================
 
 def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -879,10 +798,6 @@ def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
         index=df.index,
     )
 
-
-# ============================================================
-# 8. Historical citation features
-# ============================================================
 
 def calculate_historical_citation_features(
     df: pd.DataFrame,
@@ -942,10 +857,6 @@ def calculate_historical_citation_features(
     )
 
 
-# ============================================================
-# 9. Final builder
-# ============================================================
-
 def build_real_features(
     input_parquet_path: str,
     output_parquet_path: str,
@@ -982,20 +893,11 @@ def build_real_features(
         errors="coerce",
     )
 
-    # --------------------------------------------------------
-    # Target
-    # --------------------------------------------------------
     df["target_emergence"] = calculate_esi_target(df)
 
-    # --------------------------------------------------------
-    # 1. Dynamics
-    # --------------------------------------------------------
     topic_dyn = calculate_topic_dynamics(df)
     author_dyn = calculate_author_features(df)
 
-    # --------------------------------------------------------
-    # 2. Text / geometry
-    # --------------------------------------------------------
     text = (
         df["title"].fillna("").astype(str)
         + " "
@@ -1018,32 +920,16 @@ def build_real_features(
         text_matrix,
     )
 
-    # Free the large sparse matrix before later feature calculations.
     del text_matrix
 
-    # --------------------------------------------------------
-    # 3. Graph / interdisciplinarity proxy
-    # --------------------------------------------------------
     graph_features = calculate_temporal_graph_features(df)
 
-    # --------------------------------------------------------
-    # 4. Source / venue structure
-    # --------------------------------------------------------
     source_features = calculate_source_features(df)
 
-    # --------------------------------------------------------
-    # 5. Bibliographic support
-    # --------------------------------------------------------
     reference_features = calculate_reference_features(df)
 
-    # --------------------------------------------------------
-    # 6. Historical citations
-    # --------------------------------------------------------
     citation_features = calculate_historical_citation_features(df)
 
-    # --------------------------------------------------------
-    # Combine
-    # --------------------------------------------------------
     feature_frames = [
         topic_dyn,
         author_dyn,
@@ -1080,9 +966,6 @@ def build_real_features(
         axis=1,
     )
 
-    # --------------------------------------------------------
-    # Sanity checks
-    # --------------------------------------------------------
     logger.info("Running sanity checks...")
 
     numeric_columns = [
@@ -1102,7 +985,6 @@ def build_real_features(
                 column,
             )
 
-    # Features that should NOT be constant.
     inspect_columns = [
         "novelty_raw",
         "cluster_density",
@@ -1142,9 +1024,6 @@ def build_real_features(
         out_df.shape[1],
     )
 
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
     logger.info("Saving to %s", output_parquet_path)
 
     out_df.to_parquet(

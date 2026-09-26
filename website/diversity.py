@@ -53,16 +53,12 @@ def select_diverse_top(
     )
     candidates["_semantic_text"] = candidates.apply(_article_text, axis=1)
 
-    # Articles entering this stage normally have an abstract. Keep the fallback
-    # deterministic for incomplete records rather than failing the whole query.
     model = _get_model()
     selected_vectors: list[np.ndarray] = []
     selected_indices: list = []
     maximum_similarities: list[float] = []
     normalized_texts: set[str] = set()
 
-    # Preserve rank order, but stop embedding once enough distinct articles
-    # have been selected. A full corpus may contain thousands of candidates.
     chunk_size = 64
     for offset in range(0, len(candidates), chunk_size):
         chunk = candidates.iloc[offset:offset + chunk_size]

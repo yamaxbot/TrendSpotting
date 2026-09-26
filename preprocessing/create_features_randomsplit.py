@@ -12,30 +12,17 @@ from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.model_selection import train_test_split
 
 
-# ============================================================
-# Configuration
-# ============================================================
-
 PAST_WINDOW_YEARS = 3
 FUTURE_WINDOW_YEARS = 3
 
-# Historical emergence label:
-# compare Y-3..Y-1 with Y+1..Y+3.
 ESI_QUANTILE = 0.90
 MIN_FUTURE_VOLUME = 3
 SMOOTHING = 5.0
 
-# Text representation.
 TEXT_N_FEATURES = 2000
 
-# Robust clipping for heavy-tailed dynamic features.
 LOG_GROWTH_CLIP = 5.0
 
-# ------------------------------------------------------------
-# Dataset split
-# ------------------------------------------------------------
-# "random"  -> stratified random split across all publication years.
-# "temporal" -> train/valid/test by publication year.
 SPLIT_MODE = "random"
 
 RANDOM_STATE = 42
@@ -43,18 +30,9 @@ TRAIN_SIZE = 0.80
 VALID_SIZE = 0.10
 TEST_SIZE = 0.10
 
-# Used only when SPLIT_MODE == "temporal".
 TEMPORAL_TRAIN_END_YEAR = 2018
 TEMPORAL_VALID_END_YEAR = 2020
 
-# IMPORTANT:
-# In random mode, historical feature state is built separately for
-# each split. A validation/test paper can use only TRAIN papers that
-# were published before it. This prevents a validation/test paper from
-# becoming part of the history used to construct TRAIN features.
-#
-# In temporal mode, a paper may use all earlier papers, because all
-# earlier years are legitimately available at deployment time.
 RANDOM_HISTORY_ONLY_TRAIN = True
 
 INPUT_PATH = "download_dataset/new_dataset/new_data/openalex_corpus_1m.parquet"
@@ -67,10 +45,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ============================================================
-# Parsing helpers
-# ============================================================
 
 def parse_json_list(value: Any) -> list:
     """Safely parse a JSON/list-like OpenAlex field."""
@@ -121,10 +95,6 @@ def safe_len_json_list(value: Any) -> int:
     """Number of items in a JSON/list-like OpenAlex field."""
     return len(parse_json_list(value))
 
-
-# ============================================================
-# 1. Historical target
-# ============================================================
 
 def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
     """
@@ -228,10 +198,6 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
     return result
 
 
-# ============================================================
-# 2. Historical state helpers
-# ============================================================
-
 def _history_mask(
     df: pd.DataFrame,
     current_year: int,
@@ -258,10 +224,6 @@ def _history_mask(
 
     return mask
 
-
-# ============================================================
-# 3. Topic publication dynamics
-# ============================================================
 
 def calculate_topic_dynamics(
     df: pd.DataFrame,
@@ -303,7 +265,6 @@ def calculate_topic_dynamics(
     acceleration = np.zeros(n, dtype=np.float32)
     age = np.zeros(n, dtype=np.float32)
 
-    # Age is based on historical first appearance.
     first_year: dict[Any, int] = {}
     for (topic, year), _count in counts.items():
         if topic not in first_year or year < first_year[topic]:
@@ -347,10 +308,6 @@ def calculate_topic_dynamics(
         index=df.index,
     )
 
-
-# ============================================================
-# 4. Author dynamics
-# ============================================================
 
 def calculate_author_features(
     df: pd.DataFrame,
@@ -432,10 +389,6 @@ def calculate_author_features(
     )
 
 
-# ============================================================
-# 5. Temporal text geometry
-# ============================================================
-
 def calculate_temporal_text_features(
     df: pd.DataFrame,
     text_matrix: scipy.sparse.csr_matrix,
@@ -495,7 +448,6 @@ def calculate_temporal_text_features(
         if not topic_to_indices:
             continue
 
-        # Build centroids from already accepted historical rows only.
         historical_topics = []
         centroid_vectors = []
 
@@ -525,9 +477,6 @@ def calculate_temporal_text_features(
             centroid_matrix = None
             centroid_pos = {}
 
-        # --------------------------------------------------------
-        # Own-topic geometry
-        # --------------------------------------------------------
         for topic, indices in topic_to_indices.items():
             count = topic_count[topic]
 
@@ -556,9 +505,6 @@ def calculate_temporal_text_features(
                 2.0,
             )
 
-        # --------------------------------------------------------
-        # Cross-topic geometry
-        # --------------------------------------------------------
         if centroid_matrix is not None and len(centroid_matrix) >= 2:
             rows = text_matrix[current]
 
@@ -605,12 +551,6 @@ def calculate_temporal_text_features(
                 own_similarity[current] - nearest
             )
 
-        # --------------------------------------------------------
-        # Outlier threshold.
-        #
-        # The threshold is computed only from historical papers that
-        # were actually allowed to enter the history.
-        # --------------------------------------------------------
         if previous_novelty:
             threshold = np.quantile(
                 np.asarray(previous_novelty),
@@ -620,12 +560,6 @@ def calculate_temporal_text_features(
                 novelty[current] >= threshold
             ).astype(np.int8)
 
-        # --------------------------------------------------------
-        # Update history AFTER feature calculation.
-        #
-        # In random mode only TRAIN rows are allowed into history.
-        # In temporal mode all current rows are allowed.
-        # --------------------------------------------------------
         for topic, indices in topic_to_indices.items():
             if allowed is not None:
                 history_indices = [
@@ -666,10 +600,6 @@ def calculate_temporal_text_features(
         index=df.index,
     )
 
-
-# ============================================================
-# 6. Temporal topic-domain structure
-# ============================================================
 
 def calculate_temporal_graph_features(
     df: pd.DataFrame,
@@ -750,7 +680,6 @@ def calculate_temporal_graph_features(
                     max(0, year - pair_first_year[pair])
                 )
 
-        # Only permitted rows enter the historical graph state.
         for idx in current:
             if allowed is not None and not allowed[idx]:
                 continue
@@ -781,10 +710,6 @@ def calculate_temporal_graph_features(
         index=df.index,
     )
 
-
-# ============================================================
-# 7. Venue / source structure
-# ============================================================
 
 def calculate_source_features(
     df: pd.DataFrame,
@@ -877,10 +802,6 @@ def calculate_source_features(
     )
 
 
-# ============================================================
-# 8. Bibliographic support
-# ============================================================
-
 def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Bibliographic-support features available at publication time.
@@ -909,10 +830,6 @@ def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
         index=df.index,
     )
 
-
-# ============================================================
-# 9. Historical citation features
-# ============================================================
 
 def calculate_historical_citation_features(
     df: pd.DataFrame,
@@ -971,10 +888,6 @@ def calculate_historical_citation_features(
         index=df.index,
     )
 
-
-# ============================================================
-# 10. Split construction
-# ============================================================
 
 def make_splits(
     df: pd.DataFrame,
@@ -1045,10 +958,6 @@ def make_splits(
     )
 
 
-# ============================================================
-# 11. Feature builder
-# ============================================================
-
 def build_real_features(
     input_parquet_path: str,
     output_parquet_path: str,
@@ -1084,19 +993,8 @@ def build_real_features(
         errors="coerce",
     )
 
-    # --------------------------------------------------------
-    # Target
-    # --------------------------------------------------------
-    #
-    # Target construction is allowed to use future data because it
-    # defines the historical ground truth. It is NEVER passed into
-    # feature calculations.
-    #
     df["target_emergence"] = calculate_esi_target(df)
 
-    # --------------------------------------------------------
-    # Split
-    # --------------------------------------------------------
     train_idx, valid_idx, test_idx = make_splits(df)
 
     split = np.full(len(df), "unused", dtype=object)
@@ -1137,27 +1035,11 @@ def build_real_features(
                 int(years.max()) if years.notna().any() else "NA",
             )
 
-    # --------------------------------------------------------
-    # Historical feature policy
-    # --------------------------------------------------------
-    #
-    # RANDOM:
-    #   Every split gets features calculated with TRAIN rows as the
-    #   only allowed historical source. This is intentionally strict:
-    #   VALID/TEST papers never enter TRAIN feature history, even if
-    #   they have an earlier publication year.
-    #
-    # TEMPORAL:
-    #   All prior-year papers are legitimate history.
-    #
     if SPLIT_MODE == "random" and RANDOM_HISTORY_ONLY_TRAIN:
         allowed_history_indices = train_idx
     else:
         allowed_history_indices = None
 
-    # --------------------------------------------------------
-    # 1. Dynamics
-    # --------------------------------------------------------
     topic_dyn = calculate_topic_dynamics(
         df,
         allowed_history_indices=allowed_history_indices,
@@ -1168,9 +1050,6 @@ def build_real_features(
         allowed_history_indices=allowed_history_indices,
     )
 
-    # --------------------------------------------------------
-    # 2. Text / geometry
-    # --------------------------------------------------------
     text = (
         df["title"].fillna("").astype(str)
         + " "
@@ -1196,35 +1075,20 @@ def build_real_features(
 
     del text_matrix
 
-    # --------------------------------------------------------
-    # 3. Graph / interdisciplinarity proxy
-    # --------------------------------------------------------
     graph_features = calculate_temporal_graph_features(
         df,
         allowed_history_indices=allowed_history_indices,
     )
 
-    # --------------------------------------------------------
-    # 4. Source / venue structure
-    # --------------------------------------------------------
     source_features = calculate_source_features(
         df,
         allowed_history_indices=allowed_history_indices,
     )
 
-    # --------------------------------------------------------
-    # 5. Bibliographic support
-    # --------------------------------------------------------
     reference_features = calculate_reference_features(df)
 
-    # --------------------------------------------------------
-    # 6. Historical citations
-    # --------------------------------------------------------
     citation_features = calculate_historical_citation_features(df)
 
-    # --------------------------------------------------------
-    # Combine
-    # --------------------------------------------------------
     feature_frames = [
         topic_dyn,
         author_dyn,
@@ -1251,9 +1115,6 @@ def build_real_features(
                 .astype(np.float32)
             )
 
-    # --------------------------------------------------------
-    # Final dataset
-    # --------------------------------------------------------
     out_df = pd.concat(
         [
             df[
@@ -1272,9 +1133,6 @@ def build_real_features(
         axis=1,
     )
 
-    # --------------------------------------------------------
-    # Sanity checks
-    # --------------------------------------------------------
     logger.info("Running sanity checks...")
 
     numeric_columns = [
@@ -1334,9 +1192,6 @@ def build_real_features(
         out_df.shape[1],
     )
 
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
     logger.info("Saving to %s", output_parquet_path)
 
     out_df.to_parquet(

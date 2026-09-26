@@ -2,8 +2,7 @@ from sentence_transformers.util import cos_sim
 from on_demand_parsing.embedding_model import get_model
 
 
-
-def score_relevance(query, works):
+def score_relevance(query, works, budget=None):
     if not works:
         return []
 
@@ -16,36 +15,28 @@ def score_relevance(query, works):
         text = f"{title}. {abstract}".strip()
         texts.append(text)
 
-    # Embedding запроса
     model = get_model()
     query_embedding = model.encode(
         query
     )
 
-    # Embeddings статей
-    work_embeddings = model.encode(
-        texts,
-        batch_size=32,
-        show_progress_bar=True
-    )
-
-    # Сходство запрос ↔ статья
-    similarities = cos_sim(
-        query_embedding,
-        work_embeddings
-    )[0]
-
+    chunk_size = 256 if budget else len(works)
     result = []
+    for offset in range(0, len(works), chunk_size):
+        if budget and budget.expired():
+            budget.stop()
+        work_embeddings = model.encode(
+            texts[offset:offset + chunk_size], batch_size=32,
+            show_progress_bar=budget is None,
+        )
+        similarities = cos_sim(query_embedding, work_embeddings)[0]
+        for work, similarity in zip(works[offset:offset + chunk_size], similarities):
+            work["relevance"] = similarity.item()
+            result.append(work)
+        if budget and budget.expired():
+            budget.stop()
 
-    for work, similarity in zip(
-        works,
-        similarities
-    ):
-        work["relevance"] = similarity.item()
-        result.append(work)
 
-    # От наиболее релевантных
-    # к наименее релевантным
     return sorted(
         result,
         key=lambda x: x["relevance"],

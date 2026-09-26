@@ -51,14 +51,18 @@ def _dataset_is_ready(dataset_path: Path, corpus_path: Path) -> bool:
         from website.main import MODEL_VERSION, RANKING_VERSION
 
         table = pq.read_table(dataset_path)
-        corpus = pq.read_table(corpus_path, columns=["doc_id", "pub_year", "title"])
+        corpus = pq.read_table(corpus_path, columns=["doc_id", "pub_year", "title", "abstract_text"])
         if not required_columns.issubset(table.column_names):
             return False
         title_versions = table["llm_title_version"].to_pylist()
         model_versions = table["model_version"].to_pylist()
         analysis_versions = table["llm_analysis_version"].to_pylist()
-        from website.query_llm import is_generic_weak_signal, is_valid_title, is_valid_weak_signal
+        from website.query_llm import (
+            is_generic_weak_signal, is_valid_description, is_valid_title,
+            is_valid_weak_signal,
+        )
         titles_by_id = dict(zip(corpus["doc_id"].to_pylist(), corpus["title"].to_pylist()))
+        abstracts_by_id = dict(zip(corpus["doc_id"].to_pylist(), corpus["abstract_text"].to_pylist()))
         titles_ready = all(
             is_valid_title(title, titles_by_id.get(doc_id))
             for doc_id, title in zip(table["doc_id"].to_pylist(), table["llm_title"].to_pylist())
@@ -66,6 +70,12 @@ def _dataset_is_ready(dataset_path: Path, corpus_path: Path) -> bool:
         signals_ready = all(
             is_valid_weak_signal(value) and not is_generic_weak_signal(value)
             for value in table["llm_weak_signal"].to_pylist()
+        )
+        descriptions_ready = all(
+            is_valid_description(description, abstracts_by_id.get(doc_id))
+            for doc_id, description in zip(
+                table["doc_id"].to_pylist(), table["llm_description"].to_pylist()
+            )
         )
         return (
             table.num_rows <= 15
@@ -75,6 +85,7 @@ def _dataset_is_ready(dataset_path: Path, corpus_path: Path) -> bool:
             and all(value == RANKING_VERSION for value in table["ranking_version"].to_pylist())
             and titles_ready
             and signals_ready
+            and descriptions_ready
             and dataset_path.stat().st_mtime_ns >= corpus_path.stat().st_mtime_ns
             and set(table["doc_id"].to_pylist()).issubset(set(corpus["doc_id"].to_pylist()))
         )
@@ -86,6 +97,7 @@ def _load_trends(
     dataset_path: Path,
     corpus_path: Path,
     generate_llm_texts: bool = False,
+    budget=None,
 ) -> list[dict]:
     """Объединить предсказания модели с исходными данными публикаций."""
     import pandas as pd
@@ -139,7 +151,13 @@ def _load_trends(
             predictions.to_parquet(temporary_path, index=False)
             temporary_path.replace(dataset_path)
 
+        completed_ids = []
+        stopped_early = False
         for row_index, row in rows.iterrows():
+            if budget and budget.expired() and completed_ids:
+                budget.stop()
+                stopped_early = True
+                break
             original_title = row.get("title")
             abstract_text = row.get("abstract_text")
             title = row.get("llm_title")
@@ -168,9 +186,19 @@ def _load_trends(
                         ("summary", "problem", "advantage", "case_result", "weak_signal"),
                         "None",
                     )
-                description = analysis["summary"]
-                signal = analysis.get("weak_signal")
+                    logger.exception("Article analysis request failed for doc_id=%s", row.get("doc_id"))
+                analysis_complete = is_valid_description(analysis.get("summary"), abstract_text)
+                if analysis_complete:
+                    description = analysis["summary"]
+                    signal = analysis.get("weak_signal")
+                else:
+                    logger.warning("Article analysis remains incomplete for doc_id=%s", row.get("doc_id"))
+                    analysis = {
+                        field: row.get(f"llm_{field}") if isinstance(row.get(f"llm_{field}"), str) else "None"
+                        for field in ("problem", "advantage", "case_result")
+                    }
             else:
+                analysis_complete = True
                 analysis = {
                     "problem": row.get("llm_problem"),
                     "advantage": row.get("llm_advantage"),
@@ -194,12 +222,40 @@ def _load_trends(
             ):
                 rows.at[row_index, field] = value
                 predictions.loc[prediction_mask, field] = value
-            rows.at[row_index, "llm_analysis_version"] = ARTICLE_ANALYSIS_VERSION
+            analysis_version = ARTICLE_ANALYSIS_VERSION if analysis_complete else None
+            rows.at[row_index, "llm_analysis_version"] = analysis_version
             predictions.loc[prediction_mask, "llm_title"] = title
             predictions.loc[prediction_mask, "llm_title_version"] = TITLE_FORMAT_VERSION
             predictions.loc[prediction_mask, "llm_description"] = description
             predictions.loc[prediction_mask, "llm_weak_signal"] = signal
-            predictions.loc[prediction_mask, "llm_analysis_version"] = ARTICLE_ANALYSIS_VERSION
+            predictions.loc[prediction_mask, "llm_analysis_version"] = analysis_version
+            checkpoint()
+
+            if (
+                is_valid_title(title, original_title)
+                and is_valid_description(description, abstract_text)
+                and is_valid_weak_signal(signal)
+                and not is_generic_weak_signal(signal)
+                and analysis_complete
+            ):
+                completed_ids.append(row["doc_id"])
+            if budget and budget.expired() and completed_ids and row_index != rows.index[-1]:
+                budget.stop()
+                stopped_early = True
+                break
+
+        if stopped_early:
+            predictions = predictions[predictions["doc_id"].isin(completed_ids)].copy()
+            rows = rows[rows["doc_id"].isin(completed_ids)].copy()
+            if predictions.empty:
+                raise RuntimeError("Time limit reached before any complete article was available")
+        if budget:
+            partial_column = predictions.get("search_partial")
+            partial_result = bool(
+                budget.truncated or (partial_column is not None and partial_column.any())
+            )
+            predictions["search_partial"] = partial_result
+            rows["search_partial"] = partial_result
             checkpoint()
 
     def display_value(value):
@@ -242,6 +298,7 @@ def _load_trends(
         trends.append(
             {
                 "rank": rank,
+                "search_partial": bool(row.get("search_partial", False)),
                 "slug": f"result-{rank}",
                 "doc_id": doc_id,
                 "original_title": original_title,
@@ -299,6 +356,7 @@ def dashboard(request):
     observation_period = "None"
     error = None
     pending = False
+    partial = False
 
     if not _valid_query(query):
         return render(request, "trends/dashboard.html", {
@@ -316,6 +374,12 @@ def dashboard(request):
             dataset_path = get_built_dataset_path(query)
             if _dataset_is_ready(dataset_path, corpus_path):
                 trends = _load_trends(dataset_path, corpus_path)
+                partial = bool(trends and trends[0].get("search_partial"))
+                if not trends:
+                    import pyarrow.parquet as pq
+                    if "search_partial" in pq.read_schema(dataset_path).names:
+                        marker = pq.read_table(dataset_path, columns=["search_partial"])
+                        partial = bool(marker.num_rows and any(marker["search_partial"].to_pylist()))
                 publication_count, observation_period = _corpus_metrics(corpus_path)
             else:
                 state = jobs.start(query)
@@ -336,6 +400,7 @@ def dashboard(request):
             "observation_period": observation_period,
             "error": error,
             "pending": pending,
+            "partial": partial,
         },
     )
 

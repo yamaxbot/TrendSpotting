@@ -13,17 +13,21 @@
 <div class="loading-overlay" data-loading-overlay {% if pending %}data-status-url="{% url 'search_status' %}?q={{ query|urlencode }}"{% else %}hidden{% endif %} role="status" aria-live="polite">
   <div class="loading-card">
     <span class="loading-spinner" aria-hidden="true"></span>
-    <strong>Идёт загрузка, подождите</strong>
+    <div class="loading-copy">
+      <strong>Идёт поиск статей</strong>
+      <span>Загрузка может занять до 20 минут.</span>
+    </div>
   </div>
 </div>
 <p id="search-error" role="alert">{% if error %}{{ error }}{% endif %}</p>
 {% if pending %}<noscript><p>Поиск запущен. Включите JavaScript для автоматического обновления или обновите страницу позже.</p></noscript>{% endif %}
 {% if query and not pending and not error %}
 <section class="results-section" id="results">
+  {% if partial %}<p>Поиск остановлен по лимиту 19 мин 30 сек. Показаны результаты по данным, собранным к этому моменту.</p>{% endif %}
   <div class="section-heading"><div><div class="eyebrow">Результаты поиска</div><h2>Сигналы по запросу «{{ query }}»</h2></div></div>
   <div class="metrics"><div><strong>{{ publication_count }}</strong><span>релевантных публикаций</span></div></div>
   {% if error %}<p>{{ error }}</p>{% endif %}
-  {% if not trends %}<p>По этому запросу публикации не найдены.</p>{% endif %}
+  {% if not trends %}<p>Подходящие кандидаты в тренды по этому запросу не найдены.</p>{% endif %}
   <div class="trend-list"><div class="list-label">До 15 кандидатов в тренды <span>По оценке сигнала</span></div>
     {% for trend in trends %}<a class="trend-card" href="{% url 'trend_detail' trend.slug %}?q={{ query|urlencode }}"><div class="rank">{{ trend.rank|stringformat:'02d' }}</div><div class="trend-main"><h3>{{ trend.name }}</h3><p>{{ trend.description }}</p></div><div class="trend-confidence"><span>Оценка сигнала</span><strong>{{ trend.confidence }}%</strong><div class="confidence-bar"><i style="width: {{ trend.confidence }}%"></i></div></div><span class="arrow">↗</span></a>{% endfor %}
   </div>

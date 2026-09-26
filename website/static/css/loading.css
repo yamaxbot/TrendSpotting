@@ -25,6 +25,17 @@
   font: 600 13px Manrope, sans-serif;
 }
 
+.loading-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.loading-copy span {
+  color: #607795;
+  font: 400 12px Manrope, sans-serif;
+}
+
 .loading-spinner {
   width: 22px;
   height: 22px;

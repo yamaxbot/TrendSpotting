@@ -74,6 +74,9 @@
             <span>↗</span><div><strong>{{ title }}</strong><small>{{ meta }}</small><small class="source-link-label">Открыть оригинал →</small></div>
           </a>
         {% endfor %}
+        {% if related and not related.sources %}
+          <p class="evidence-note">Дополнительных работ, прошедших строгую проверку близости, не найдено.</p>
+        {% endif %}
       </section>
     </aside>
   </div>

@@ -3,7 +3,6 @@
 __pycache__/
 website/staticfiles/
 
-# Local datasets, generated features, caches, and pipeline state.
 data/
 download_dataset/data/
 *.parquet
@@ -17,13 +16,11 @@ download_dataset/data/
 *.db-shm
 *.db-wal
 
-# Logs and compressed local data archives.
 *.log
 *.logdata.zip
 on_demand_parsing/data
 *.zip
 
-# Python and tool caches.
 *.py[cod]
 .pytest_cache/
 .mypy_cache/

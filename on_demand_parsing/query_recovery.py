@@ -57,7 +57,7 @@ def matches_original_query(work, query):
     return len(query_terms & text_terms) >= required
 
 
-def recover_seed_works(query, years, search_fn):
+def recover_seed_works(query, years, search_fn, budget=None):
     """Return original-query-matching seeds for the normal topic expansion."""
     recovered = {}
     attempts = [(query, False)]
@@ -65,6 +65,9 @@ def recover_seed_works(query, years, search_fn):
         attempts.extend(((variant, True), (variant, False)))
 
     for variant, require_references in attempts:
+        if budget and budget.expired():
+            budget.stop()
+            break
         works = search_fn(
             variant,
             limit=RECOVERY_LIMIT,

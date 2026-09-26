@@ -2,9 +2,11 @@
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from website.query_llm import _query_llm
 
@@ -13,6 +15,8 @@ GATE_VERSION = "intent-v1"
 BATCH_SIZE = 20
 MAX_CANDIDATES = 120
 MAX_ABSTRACT_CHARACTERS = 900
+MAX_RELEVANCE_ATTEMPTS = 3
+logger = logging.getLogger(__name__)
 
 RELEVANCE_PROMPT = """Decide which scientific works are directly relevant to the user's requested technology direction. Use the ORIGINAL user request to resolve the intended subject and direction of the relationship. For example, protecting AI systems is NOT the same as using AI for medical screening, fraud detection or other protection tasks. A keyword mention, broad OpenAlex topic, or generic application of AI is insufficient: the work's main research question, method or result must concern the requested direction. Be conservative if the title and abstract do not establish this. Return only JSON {"relevant_ids":["id",...]}, with IDs from the supplied works; omit all irrelevant or unclear works. Do not add explanations."""
 
@@ -50,20 +54,23 @@ def _classify_batch(query: str, works: list[dict]) -> set[str]:
         {"request": query, "works": works}, ensure_ascii=False,
         separators=(",", ":"),
     )
-    # This endpoint may spend part of the completion budget on reasoning;
-    # small budgets can therefore return no JSON even for a short ID list.
-    answer = _query_llm(RELEVANCE_PROMPT, content, max_tokens=1200, temperature=0.0)
-    try:
-        data = json.loads(answer)
-        ids = data["relevant_ids"]
-        available_ids = {work["id"] for work in works}
-        if not isinstance(ids, list) or any(
-            not isinstance(value, str) or value not in available_ids for value in ids
-        ):
-            raise ValueError("invalid relevance IDs")
-    except (ValueError, TypeError, KeyError) as exc:
-        raise RuntimeError("Некорректный ответ проверки релевантности") from exc
-    return set(ids)
+    for attempt in range(1, MAX_RELEVANCE_ATTEMPTS + 1):
+        try:
+            answer = _query_llm(RELEVANCE_PROMPT, content, max_tokens=1200, temperature=0.0)
+            data = json.loads(answer)
+            ids = data["relevant_ids"]
+            available_ids = {work["id"] for work in works}
+            if not isinstance(ids, list) or any(
+                not isinstance(value, str) or value not in available_ids for value in ids
+            ):
+                raise ValueError("invalid relevance IDs")
+            return set(ids)
+        except (RuntimeError, ValueError, TypeError, KeyError, requests.RequestException) as exc:
+            logger.warning(
+                "Relevance check attempt %s/%s failed: %s",
+                attempt, MAX_RELEVANCE_ATTEMPTS, type(exc).__name__,
+            )
+    raise RuntimeError("Некорректный ответ проверки релевантности")
 
 
 def select_relevant_diverse_top(
@@ -72,6 +79,7 @@ def select_relevant_diverse_top(
     query: str,
     cache_path: Path,
     limit: int = 15,
+    budget=None,
 ) -> tuple[list, list[float]]:
     """Check ranked works in batches and refill until a diverse top is found.
 
@@ -99,6 +107,9 @@ def select_relevant_diverse_top(
     selected = ([], [])
 
     for offset in range(0, len(candidates), BATCH_SIZE):
+        if budget and budget.expired() and offset:
+            budget.stop()
+            break
         batch = candidates.iloc[offset:offset + BATCH_SIZE]
         works = []
         keys = {}
@@ -129,6 +140,9 @@ def select_relevant_diverse_top(
             )
             if len(selected[0]) >= limit:
                 break
+        if budget and budget.expired():
+            budget.stop()
+            break
 
     if accepted_indices and not selected[0]:
         selected = select_diverse_top(

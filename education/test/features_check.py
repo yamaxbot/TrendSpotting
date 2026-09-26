@@ -4,7 +4,6 @@ df = pd.read_parquet(
     "download_dataset/new_dataset/new_data/final_openalex_dataset.parquet"
 )
 
-# Проверяем ключевые "нулевые" фичи и фичи роста
 check_cols = [
     "citation_velocity",
     "novelty_raw",

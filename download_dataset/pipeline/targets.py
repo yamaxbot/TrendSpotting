@@ -101,7 +101,6 @@ def label(config: dict, client: Client) -> None:
                     after = sum(authors.get(y, 0) for y in range(year + 3, year + 6))
                     record["new_authors_baseline"] = before
                     record["new_authors_future"] = after
-                    # No evidence is not a negative example.
                     if before == 0:
                         record["target_status"] = "insufficient_author_baseline"
                     else:

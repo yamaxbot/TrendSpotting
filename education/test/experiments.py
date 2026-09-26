@@ -29,10 +29,6 @@ from sklearn.metrics import (
 SEED = 42
 DEFAULT_MODE = "ranking"
 
-# PairLogit без ограничения пытается сгенерировать все пары
-# positive x negative внутри каждой ranking-группы.
-# Для больших групп это может быть O(N^2), поэтому ограничиваем число
-# автоматически генерируемых пар НА КАЖДУЮ группу.
 DEFAULT_MAX_PAIRS = 1000
 DEFAULT_RANK_TOP = 100
 
@@ -104,7 +100,6 @@ def threshold_table(y, scores, n_thresholds=1000):
 
     precision, recall, thresholds = precision_recall_curve(y, scores)
 
-    # Последняя точка PR-кривой не имеет собственного threshold.
     precision = precision[:-1]
     recall = recall[:-1]
 
@@ -131,8 +126,6 @@ def threshold_table(y, scores, n_thresholds=1000):
         where=(precision + recall) > 0,
     )
 
-    # MCC восстанавливаем из precision/recall и общего числа positive/negative.
-    # Это O(n_thresholds), без огромной boolean-матрицы.
     positives = float(y.sum())
     negatives = float(y.size - y.sum())
 
@@ -174,8 +167,6 @@ def evaluate(name, y, scores, threshold, out_dir):
     scores = np.asarray(scores, dtype=np.float64)
     pred = (scores >= threshold).astype(np.int8)
 
-    # Всегда фиксируем порядок 0/1, чтобы shape был 2x2 даже
-    # при вырожденном предсказании.
     cm = confusion_matrix(y, pred, labels=[0, 1])
 
     metrics = {
@@ -417,8 +408,6 @@ def make_ranking_pools(
     group_id_valid = group_all[df.index.isin(Xva.index)]
     group_id_test = group_all[df.index.isin(Xte.index)]
 
-    # The boolean masks above preserve df order and therefore match X splits.
-    # Sort each split so equal group IDs are contiguous for CatBoost.
     idx_tr = np.argsort(group_id_train, kind="stable")
     idx_va = np.argsort(group_id_valid, kind="stable")
     idx_te = np.argsort(group_id_test, kind="stable")
@@ -588,9 +577,6 @@ def main():
     out = Path(args.output_dir) / mode
     out.mkdir(parents=True, exist_ok=True)
 
-    # ================================================================
-    # 1. LOAD
-    # ================================================================
     print("=" * 70)
     print(f"1. LOAD (MODE: {mode.upper()})")
     print("=" * 70)
@@ -617,9 +603,6 @@ def main():
         .astype(np.int8)
     )
 
-    # ================================================================
-    # 2. TARGET
-    # ================================================================
     if mode == "binary":
         y_all = df["target_emergence"].to_numpy()
 
@@ -654,25 +637,15 @@ def main():
         model_class = CatBoostRegressor
 
     else:
-        # Ranking target: 1 = emerging, 0 = not emerging.
         y_all = df["target_emergence"].to_numpy()
 
-        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ:
-        # без max_pairs CatBoost пытается построить все positive x negative
-        # пары внутри каждой группы. На большой группе это взрывается.
         loss_func = (
             f"PairLogit:max_pairs={args.max_pairs}"
         )
-        # NDCG is a useful ranking diagnostic, but CatBoost documents it as
-        # non-optimizable. Use the optimized PairLogit metric for best-model
-        # selection; calculate NDCG/top-K separately.
         eval_metric = "PairLogit"
         model_class = CatBoostRanker
         pairlogit = f"PairLogit:max_pairs={args.max_pairs}"
 
-    # ================================================================
-    # 3. FEATURES
-    # ================================================================
     print("\n" + "=" * 70)
     print("2. FEATURES")
     print("=" * 70)
@@ -688,9 +661,6 @@ def main():
         for column in cat_features:
             print(f"  - {column}")
 
-    # ================================================================
-    # 4. TEMPORAL SPLIT
-    # ================================================================
     print("\n" + "=" * 70)
     print("3. TEMPORAL SPLIT")
     print("=" * 70)
@@ -711,9 +681,6 @@ def main():
         y_all,
     )
 
-    # ================================================================
-    # 5. POOLS
-    # ================================================================
     print("\n" + "=" * 70)
     print("4. BUILD POOLS")
     print("=" * 70)
@@ -779,9 +746,6 @@ def main():
         yva_used = yva
         yte_used = yte
 
-    # ================================================================
-    # 6. MODEL
-    # ================================================================
     print("\n" + "=" * 70)
     print(f"5. CATBOOST TRAINING ({mode.upper()})")
     print("=" * 70)
@@ -810,8 +774,6 @@ def main():
         model_params["auto_class_weights"] = "Balanced"
 
     elif mode == "ranking":
-        # Не даём CatBoost строить дорогие CTR-комбинации категориальных
-        # признаков без необходимости.
         model_params["max_ctr_complexity"] = 1
 
     print(f"loss_function = {loss_func}")
@@ -859,9 +821,6 @@ def main():
     except Exception as exc:
         print(f"Warning: could not save eval history: {exc}")
 
-    # ================================================================
-    # 7. SCORES
-    # ================================================================
     print("\n" + "=" * 70)
     print("6. PREDICTIONS")
     print("=" * 70)
@@ -884,9 +843,6 @@ def main():
             model.predict(test_pool)
         ).reshape(-1)
 
-    # ================================================================
-    # 8. RANKING DIAGNOSTICS
-    # ================================================================
     if mode == "ranking":
         print("\n" + "=" * 70)
         print("7. RANKING DIAGNOSTICS")
@@ -913,9 +869,6 @@ def main():
             out / "test_group_ranking_metrics.csv", index=False
         )
 
-    # ================================================================
-    # 8. THRESHOLD SEARCH
-    # ================================================================
     print("\n" + "=" * 70)
     print("7. THRESHOLD SEARCH — VALIDATION ONLY")
     print("=" * 70)
@@ -974,22 +927,16 @@ def main():
         out,
     )
 
-    # ================================================================
-    # 9. FEATURE IMPORTANCE
-    # ================================================================
     print("\n" + "=" * 70)
     print("8. FEATURE IMPORTANCE")
     print("=" * 70)
 
-    # FeatureImportance автоматически использует подходящий тип
-    # importance для конкретного класса модели.
     try:
         importance = model.get_feature_importance(
             data=train_pool,
             type="FeatureImportance",
         )
     except Exception:
-        # Fallback для совместимости со старыми версиями CatBoost.
         if mode == "ranking":
             importance = model.get_feature_importance(
                 data=train_pool,
@@ -1024,9 +971,6 @@ def main():
         index=False,
     )
 
-    # ================================================================
-    # 10. SHAP
-    # ================================================================
     print("\n" + "=" * 70)
     print("9. SHAP")
     print("=" * 70)
@@ -1034,10 +978,6 @@ def main():
     rng = np.random.default_rng(SEED)
 
     if len(Xte_used) > args.shap_sample:
-        # В ranking-режиме Xte_used уже отсортирован по group_id.
-        # После случайного sampling индексы нужно отсортировать обратно,
-        # иначе одинаковые group_id окажутся разбросаны, а CatBoost требует,
-        # чтобы объекты одной группы шли подряд.
         idx_shap = np.sort(
             rng.choice(
                 len(Xte_used),
@@ -1081,7 +1021,6 @@ def main():
         shap_values
     )
 
-    # Последний столбец — expected value.
     shap_matrix = np.asarray(
         shap_values[:, :-1],
         dtype=np.float32,
@@ -1116,9 +1055,6 @@ def main():
         index=False,
     )
 
-    # ================================================================
-    # 11. TEST PREDICTIONS
-    # ================================================================
     print("\n" + "=" * 70)
     print("10. SAVE TEST PREDICTIONS")
     print("=" * 70)
@@ -1151,9 +1087,6 @@ def main():
         index=False,
     )
 
-    # ================================================================
-    # 12. SUMMARY
-    # ================================================================
     summary = {
         "mode": mode,
         "loss_function": loss_func,

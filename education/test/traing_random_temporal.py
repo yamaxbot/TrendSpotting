@@ -394,7 +394,6 @@ def main():
     df["pub_year"] = df["pub_year"].astype(np.int32)
     df["target_emergence"] = df["target_emergence"].astype(np.int8)
 
-    # Относительные доли.
     year_totals = df.groupby("pub_year")["doc_id"].transform("count")
 
     if "topic_historical_volume" in df.columns:
@@ -417,7 +416,6 @@ def main():
             "commercial_maturity_index"
         ].fillna(-1.0)
 
-    # Удаляем известные константы/дубли и абсолютные счетчики.
     drop_features = {
         "has_ref_data",
         "has_reference_list",
@@ -464,9 +462,6 @@ def main():
     if cat_features:
         print(f"Категориальные: {cat_features}")
 
-    # ================================================================
-    # EXPERIMENT 1 — RANDOM SPLIT
-    # ================================================================
     print("\n" + "=" * 70)
     print("2. RANDOM SPLIT (2020-2023, STRATIFIED)")
     print("=" * 70)
@@ -482,9 +477,6 @@ def main():
         args.shap_sample,
     )
 
-    # ================================================================
-    # EXPERIMENT 2 — TEMPORAL SPLIT
-    # ================================================================
     print("\n" + "=" * 70)
     print("3. TEMPORAL SPLIT (2020-2021 | 2022 | 2023)")
     print("=" * 70)
@@ -500,9 +492,6 @@ def main():
         args.shap_sample,
     )
 
-    # ================================================================
-    # COMPARISON
-    # ================================================================
     comparison = {
         "random": random_metrics,
         "temporal": temporal_metrics,

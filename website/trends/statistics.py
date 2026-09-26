@@ -65,7 +65,6 @@ def thematic_query(title, abstract):
     _, index, first, second = max(candidates)
     phrase = f'"{first} {second}"'
 
-    # Keep a short application qualifier when it precedes the selected phrase.
     for word in title_words[:index]:
         if (
             word.lower() not in {"ai", "ml"}

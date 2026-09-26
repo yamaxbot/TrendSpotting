@@ -24,7 +24,6 @@ def api_key() -> str | None:
     value = os.environ.get("OPENALEX_API_KEY")
     if value:
         return value
-    # new_dataset/.env → download_dataset/.env → TrendSpotting/.env
     for path in (ROOT / ".env", ROOT.parent / ".env", ROOT.parent.parent / ".env"):
         if not path.exists():
             continue

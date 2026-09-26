@@ -2,7 +2,6 @@ from sentence_transformers.util import cos_sim
 from on_demand_parsing.embedding_model import get_model
 
 
-
 def score_topics(query, topics):
     if not topics:
         return []

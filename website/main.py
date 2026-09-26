@@ -20,7 +20,6 @@ MODEL_METRICS_PATH = MODEL_PATH.with_name("metrics.json")
 MODEL_VERSION = "catboost-random-split-2026-09-v1"
 RANKING_VERSION = "intent-relevance-v1"
 
-# Позволяет запускать файл напрямую: python website/main.py
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -105,8 +104,6 @@ def _prepare_model_input(dataset: pd.DataFrame, model):
     feature_names = model.feature_names_
     dataset = dataset.copy()
 
-    # Эти относительные признаки создавались training-скриптом после общего
-    # preprocessing. На inference воспроизводим формулы обучения дословно.
     if "pub_year" in dataset.columns and "doc_id" in dataset.columns:
         year_totals = dataset.groupby("pub_year")["doc_id"].transform("count")
         derived_shares = {
@@ -125,9 +122,6 @@ def _prepare_model_input(dataset: pd.DataFrame, model):
             dataset["commercial_maturity_index"].fillna(-1.0)
         )
 
-    # Модель random split обучалась с техническим полем split. Для production
-    # оно всегда имеет отдельное значение inference; важность этого признака в
-    # сохранённой модели равна нулю, но колонка нужна для совместимости схемы.
     if "split" in feature_names and "split" not in dataset.columns:
         dataset["split"] = "inference"
 
@@ -155,6 +149,7 @@ def add_model_targets(
     dataset_path: str | Path,
     corpus_path: str | Path | None = None,
     query: str | None = None,
+    budget=None,
 ) -> Path:
     """Добавить предсказания CatBoost и сохранить 15 лучших результатов."""
     dataset_path = Path(dataset_path).resolve()
@@ -165,8 +160,11 @@ def add_model_targets(
 
     dataset = pd.read_parquet(dataset_path)
     dataset = dataset.drop(columns=["target_emergence"], errors="ignore")
+    if budget and budget.expired():
+        budget.stop()
 
     if dataset.empty:
+        dataset["search_partial"] = bool(budget and budget.truncated)
         dataset["target_emergence"] = pd.Series(dtype="int8")
         dataset["model_confidence"] = pd.Series(dtype="float64")
         dataset["model_threshold"] = pd.Series(dtype="float64")
@@ -218,7 +216,9 @@ def add_model_targets(
 
     primary_articles = article_texts.loc[
         ~article_texts.apply(
-            lambda row: is_review_article(row.get("title"), row.get("work_type")),
+            lambda row: is_review_article(
+                row.get("title"), row.get("work_type"), row.get("abstract_text"),
+            ),
             axis=1,
         ),
         "doc_id",
@@ -234,6 +234,7 @@ def add_model_targets(
             query.strip(),
             dataset_path.with_name(f"{dataset_path.stem}.relevance.json"),
             limit=15,
+            **({"budget": budget} if budget else {}),
         )
     else:
         top_indices, maximum_similarities = select_diverse_top(
@@ -242,6 +243,7 @@ def add_model_targets(
             limit=15,
         )
     dataset = dataset.loc[top_indices].copy()
+    dataset["search_partial"] = bool(budget and budget.truncated)
     dataset["model_confidence"] = dataset["model_confidence"].round(2)
     dataset["diversity_max_similarity"] = maximum_similarities
     if dataset.empty:
@@ -283,7 +285,7 @@ def add_model_targets(
     return dataset_path
 
 
-def build_dataset_for_query(query: str) -> Path:
+def build_dataset_for_query(query: str, budget=None) -> Path:
     """Собрать статьи по запросу и построить итоговый набор признаков."""
     from on_demand_parsing.parser import run_parser
     from preprocessing.create_features import build_real_features
@@ -292,7 +294,7 @@ def build_dataset_for_query(query: str) -> Path:
     if not query:
         raise ValueError("Запрос не должен быть пустым")
 
-    run_parser(query)
+    run_parser(query, **({"budget": budget} if budget else {}))
     source_path = get_parsed_corpus_path(query)
 
     output_path = get_built_dataset_path(query)
@@ -302,6 +304,7 @@ def build_dataset_for_query(query: str) -> Path:
     if pq.read_metadata(source_path).num_rows == 0:
         pd.DataFrame(columns=[
             "doc_id",
+            "search_partial",
             "target_emergence",
             "model_confidence",
             "model_threshold",
@@ -317,11 +320,12 @@ def build_dataset_for_query(query: str) -> Path:
             "llm_problem",
             "llm_advantage",
             "llm_case_result",
-        ]).to_parquet(output_path, index=False)
+        ]).assign(search_partial=bool(budget and budget.truncated)).to_parquet(output_path, index=False)
         return output_path
 
     build_real_features(str(source_path), str(output_path))
-    return add_model_targets(output_path, source_path, query=query)
+    return add_model_targets(output_path, source_path, query=query,
+                             **({"budget": budget} if budget else {}))
 
 
 if __name__ == "__main__":

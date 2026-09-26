@@ -1,11 +1,34 @@
 import unittest
 from unittest.mock import patch
 
-from on_demand_parsing import main_collection, openalex_client, parser, query_recovery
+from on_demand_parsing import main_collection, openalex_client, parser, query_normalizer, query_recovery
 from on_demand_parsing.relevance_filter import filter_relevant
 
 
 class CollectionOptimizationTests(unittest.TestCase):
+    def test_query_normalization_retries_invalid_provider_response(self):
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self.payload
+
+        responses = [
+            Response({"error": "temporary"}),
+            Response({"choices": [{"message": {"content": "solid-state batteries"}}]}),
+        ]
+        with patch.object(query_normalizer, "API_KEY", "test"), \
+             patch.object(query_normalizer.requests, "post", side_effect=responses) as post:
+            self.assertEqual(
+                query_normalizer.normalize_query("твердотельные аккумуляторы"),
+                "solid-state batteries",
+            )
+        self.assertEqual(post.call_count, 2)
+
     def test_recovery_keeps_only_original_query_matches(self):
         def work(identifier, title):
             return {

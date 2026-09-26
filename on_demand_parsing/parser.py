@@ -29,8 +29,6 @@ def get_parse_corpus_path(user_query: str) -> Path:
     return PARSE_DATA_DIR / f"parse_corpus_{filename[:100] or 'query'}.parquet"
 
 
-# Та же схема, что у датасета на 1 млн статей
-
 STRINGS = [
     "doc_id",
     "pub_date",
@@ -97,9 +95,6 @@ def short_id(value):
 def make_parquet_record(work, query):
     authorships = work.get("authorships") or []
 
-    # -------------------------
-    # Authors
-    # -------------------------
 
     authors_ids = []
 
@@ -110,9 +105,6 @@ def make_parquet_record(work, query):
         if author_id and author_id not in authors_ids:
             authors_ids.append(author_id)
 
-    # -------------------------
-    # Institutions
-    # -------------------------
 
     institutions = [
         institution
@@ -126,9 +118,6 @@ def make_parquet_record(work, query):
         if institution.get("display_name")
     })
 
-    # -------------------------
-    # Commercial maturity
-    # -------------------------
 
     commercial = sum(
         any(
@@ -161,9 +150,6 @@ def make_parquet_record(work, query):
     else:
         affiliation_coverage = None
 
-    # -------------------------
-    # Source tier
-    # -------------------------
 
     source_type = work.get("source_type")
     work_type = work.get("type")
@@ -180,9 +166,6 @@ def make_parquet_record(work, query):
     else:
         source_tier = "other"
 
-    # -------------------------
-    # References
-    # -------------------------
 
     references = [
         short_id(value)
@@ -190,15 +173,9 @@ def make_parquet_record(work, query):
         if value
     ]
 
-    # -------------------------
-    # Field
-    # -------------------------
 
     field_id = short_id(work.get("field_id"))
 
-    # -------------------------
-    # Final record
-    # -------------------------
 
     return {
         "doc_id": short_id(work.get("id")),
@@ -232,7 +209,6 @@ def make_parquet_record(work, query):
 
         "referenced_works_ids": references,
 
-        # В 1M dataset эти поля — JSON строки
         "counts_by_year": json.dumps(
             work.get("counts_by_year", []),
             ensure_ascii=False
@@ -258,8 +234,6 @@ def make_parquet_record(work, query):
             dt.timezone.utc
         ).isoformat(),
 
-        # Для on-demand выборки вместо
-        # исторического stratum сохраняем запрос
         "stratum": query,
 
         "is_engineering": field_id == "22",
@@ -272,8 +246,6 @@ def make_parquet_record(work, query):
 
         "has_ref_data": int(bool(references)),
 
-        # Эти значения относятся к historical
-        # labeling и здесь пока неизвестны
         "target_emergence": None,
         "target_status": "inference",
         "target_population": None,
@@ -321,25 +293,24 @@ def save_parquet(
     return table
 
 
-def run_parser(user_query, years=PARSING_YEARS):
+def run_parser(user_query, years=PARSING_YEARS, budget=None):
     years = tuple(sorted({int(year) for year in years}))
     if not years:
         raise ValueError("Нужно указать хотя бы один год публикации")
 
     output_path = get_parse_corpus_path(user_query)
 
-    # 1. Query normalization
 
     query = normalize_query(user_query)
 
     print("OpenAlex query:", query)
 
-    # 2. Seed Search
 
     seed_works = search_works(
         query,
         limit=1000,
         years=years,
+        **({"budget": budget} if budget else {}),
     )
 
     print(
@@ -349,10 +320,14 @@ def run_parser(user_query, years=PARSING_YEARS):
 
     recovered_seed = not seed_works
     if recovered_seed:
-        seed_works = recover_seed_works(query, years, search_works)
+        search_fn = (
+            lambda *args, **kwargs: search_works(*args, budget=budget, **kwargs)
+            if budget else search_works(*args, **kwargs)
+        )
+        seed_works = recover_seed_works(query, years, search_fn,
+                                        **({"budget": budget} if budget else {}))
         print("Recovered seed works:", len(seed_works))
 
-    # 3. Topic Discovery
 
     if not seed_works:
         save_parquet([], query, output_path)
@@ -367,14 +342,12 @@ def run_parser(user_query, years=PARSING_YEARS):
         len(topics)
     )
 
-    # 4. Topic Scoring
 
     scored_topics = score_topics(
         query,
         topics
     )
 
-    # 5. Topic Selection
 
     selected_topics = select_topics(
         scored_topics,
@@ -396,7 +369,6 @@ def run_parser(user_query, years=PARSING_YEARS):
             f'{topic["name"]}'
         )
 
-    # 6. Main Collection
 
     main_works, yearly_stats = (
         collect_main_corpus(
@@ -404,6 +376,7 @@ def run_parser(user_query, years=PARSING_YEARS):
             query,
             years,
             seed_works=seed_works,
+            **({"budget": budget} if budget else {}),
         )
     )
 
@@ -413,7 +386,6 @@ def run_parser(user_query, years=PARSING_YEARS):
         len(main_works)
     )
 
-    # 7. Normalization
 
     normalized_works = normalize_works(
         main_works
@@ -436,11 +408,11 @@ def run_parser(user_query, years=PARSING_YEARS):
         before_quality_filter - len(normalized_works),
     )
 
-    # 8. Relevance filtering
 
     scored_works = score_relevance(
         query,
-        normalized_works
+        normalized_works,
+        **({"budget": budget} if budget else {}),
     )
 
     if recovered_seed and scored_works:
@@ -486,7 +458,6 @@ def run_parser(user_query, years=PARSING_YEARS):
             f'{clean_works[-1]["relevance"]:.3f}'
         )
 
-    # 9. Yearly statistics
 
     print("\nYEARLY STATS:")
 
@@ -500,7 +471,6 @@ def run_parser(user_query, years=PARSING_YEARS):
                 f"  {year}: {count}"
             )
 
-    # 10. JSON output
 
     save_results(
         raw_works=main_works,
@@ -508,7 +478,6 @@ def run_parser(user_query, years=PARSING_YEARS):
         yearly_stats=yearly_stats
     )
 
-    # 11. Parquet
 
     save_parquet(
         clean_works,

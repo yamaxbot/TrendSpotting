@@ -16,9 +16,8 @@ def run_full_eda(parquet_path: str):
     print("1. ЗАГРУЗКА И СТРУКТУРА ДАТАСЕТА (через Polars)")
     print("=" * 70)
 
-    # Загружаем через Polars для высокой скорости на 1M строк
     pldf = pl.read_parquet(parquet_path)
-    df = pldf.to_pandas()  # Для специфических sklearn/scipy метрик
+    df = pldf.to_pandas()
     print(df.columns.tolist())
     num_rows, num_cols = pldf.shape
     print(f"Размер датасета: {num_rows:,} строк x {num_cols} колонок")
@@ -26,7 +25,6 @@ def run_full_eda(parquet_path: str):
         f"Использование памяти в RAM: {df.memory_usage(deep=True).sum() / (1024**2):.2f} MB\n"
     )
 
-    # -------------------------------------------------------------
     print("=" * 70)
     print("2. АНАЛИЗ ЦЕЛЕВОЙ ПЕРЕМЕННОЙ (target_emergence)")
     print("=" * 70)
@@ -60,7 +58,6 @@ def run_full_eda(parquet_path: str):
         )
     print()
 
-    # -------------------------------------------------------------
     print("=" * 70)
     print("3. ПРОПУСКИ И ТИПЫ ДАННЫХ")
     print("=" * 70)
@@ -75,7 +72,6 @@ def run_full_eda(parquet_path: str):
     print(null_summary)
     print()
 
-    # -------------------------------------------------------------
     print("=" * 70)
     print("4. ОПИСАТЕЛЬНАЯ СТАТИСТИКА ПРИЗНАКОВ (Descriptive Statistics)")
     print("=" * 70)
@@ -91,7 +87,6 @@ def run_full_eda(parquet_path: str):
         series = df[col].dropna()
         q25, q50, q75 = np.percentile(series, [25, 50, 75])
         iqr = q75 - q25
-        # Выбросы по правилу IQR
         outliers = ((series < (q25 - 1.5 * iqr)) | (series > (q75 + 1.5 * iqr))).sum()
 
         stats_df.append(
@@ -112,13 +107,11 @@ def run_full_eda(parquet_path: str):
     print(stats_summary.to_string(index=False))
     print()
 
-    # -------------------------------------------------------------
     print("=" * 70)
     print("5. АНАЛИЗ СЕПАРЕБЕЛЬНОСТИ (KS-test & Mutual Information)")
     print("=" * 70)
     print("Оценивается разделимость классов по отдельным признакам.")
 
-    # Сэмплируем 100k для быстрого расчета Mutual Info на огромном объеме
     sample_df = labeled_df.sample(n=min(100000, labeled_count), random_state=42)
     sample_clean = sample_df[numeric_cols].fillna(-999)
 
@@ -131,7 +124,6 @@ def run_full_eda(parquet_path: str):
         cls0 = labeled_df[labeled_df["target_emergence"] == 0][col].dropna()
         cls1 = labeled_df[labeled_df["target_emergence"] == 1][col].dropna()
 
-        # Тест Колмогорова-Смирнова на различие распределений
         ks_stat, p_val = ks_2samp(cls0, cls1)
 
         ks_results.append(
@@ -145,7 +137,6 @@ def run_full_eda(parquet_path: str):
     print(sep_df.to_string(index=False))
     print()
 
-    # -------------------------------------------------------------
     print("=" * 70)
     print("6. ПРОВЕРКА МУЛЬТИКОЛЛИНЕАРНОСТИ (Спирмен > 0.8)")
     print("=" * 70)
@@ -171,7 +162,6 @@ def run_full_eda(parquet_path: str):
     else:
         print("[INFO] Высокой корреляции между непрерывными признаками не обнаружено.")
 
-    # -------------------------------------------------------------
     print("\n=" * 70)
     print("7. РАЗБИЕНИЕ ПО SOURCE TIER")
     print("=" * 70)

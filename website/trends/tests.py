@@ -8,6 +8,7 @@ import numpy as np
 from django.test import SimpleTestCase
 
 from trends import charts, evidence, jobs, statistics, views
+from on_demand_parsing.time_budget import SearchBudget
 
 
 class WebsiteTests(SimpleTestCase):
@@ -63,6 +64,35 @@ class WebsiteTests(SimpleTestCase):
             self.assertNotContains(detail, 'javascript:')
             self.assertEqual(self.client.get('/trend/unknown/', {'q': 'test'}).status_code, 404)
             start.assert_not_called()
+
+    def test_deadline_keeps_completed_card_and_marks_partial_result(self):
+        corpus = pd.read_parquet(self.corpus)
+        second = corpus.iloc[0].copy()
+        second["doc_id"] = "W2"
+        corpus = pd.concat([corpus, second.to_frame().T], ignore_index=True)
+        corpus.to_parquet(self.corpus, index=False)
+
+        predictions = pd.read_parquet(self.dataset)
+        second_prediction = predictions.iloc[0].copy()
+        second_prediction["doc_id"] = "W2"
+        predictions = pd.concat(
+            [predictions, second_prediction.to_frame().T], ignore_index=True,
+        )
+        predictions.to_parquet(self.dataset, index=False)
+
+        budget = SearchBudget(deadline=0)
+        trends = views._load_trends(
+            self.dataset, self.corpus, generate_llm_texts=True, budget=budget,
+        )
+        saved = pd.read_parquet(self.dataset)
+        self.assertEqual([trend["doc_id"] for trend in trends], ["W1"])
+        self.assertEqual(saved["doc_id"].tolist(), ["W1"])
+        self.assertTrue(saved["search_partial"].all())
+        self.assertTrue(budget.truncated)
+        self.assertTrue(views._dataset_is_ready(self.dataset, self.corpus))
+        response = self.client.get("/", {"q": "test"})
+        self.assertTrue(response.context["partial"])
+        self.assertContains(response, "19 мин 30 сек")
 
     def test_information_pages_are_reachable_from_navigation(self):
         home = self.client.get('/')
@@ -123,6 +153,7 @@ class WebsiteTests(SimpleTestCase):
         with patch.object(evidence, 'load_cached', return_value=related):
             response = self.client.get('/trend/result-1/', {'q': 'test'})
         self.assertContains(response, related['signal_text'])
+        self.assertContains(response, 'Дополнительных работ, прошедших строгую проверку близости, не найдено.')
         self.assertNotContains(response, 'Объяснение')
 
         related['signal_text'] = None
@@ -188,7 +219,7 @@ class WebsiteTests(SimpleTestCase):
         with patch.object(jobs, 'start') as start:
             response = self.client.get('/', {'q': 'rare'})
         self.assertFalse(response.context['pending'])
-        self.assertContains(response, 'По этому запросу публикации не найдены')
+        self.assertContains(response, 'Подходящие кандидаты в тренды по этому запросу не найдены')
         start.assert_not_called()
 
     def test_missing_explanation_and_untranslated_title_invalidate_cache(self):
@@ -245,6 +276,108 @@ class WebsiteTests(SimpleTestCase):
         self.assertEqual(result['weak_signal'], 'Прототип измеряет глюкозу оптическим методом.')
         with self.assertRaises(ValueError):
             query_llm._parse_article_analysis('{"summary":"Only one field"}')
+
+    def test_article_analysis_retries_empty_and_transient_responses(self):
+        from website import query_llm
+
+        empty = json.dumps(dict.fromkeys(
+            ('summary', 'problem', 'advantage', 'case_result', 'weak_signal'), 'None'
+        ))
+        valid = json.dumps({
+            'summary': 'Sensor measures glucose.',
+            'problem': 'Glucose monitoring.',
+            'advantage': 'Optical measurement.',
+            'case_result': 'Prototype demonstrated.',
+            'weak_signal': 'Optical sensor prototype was demonstrated.',
+        })
+        with patch.object(
+            query_llm, '_query_llm',
+            side_effect=[empty, query_llm.requests.Timeout(), valid],
+        ) as request:
+            result = query_llm.analyze_abstract('A sensor abstract.')
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(result['summary'], 'Sensor measures glucose.')
+
+    def test_article_analysis_accepts_scientific_units(self):
+        from website import query_llm
+
+        payload = json.dumps({
+            'summary': 'Представлен перестраиваемый генератор сигналов.',
+            'problem': 'Снизить фазовый шум.',
+            'advantage': 'Широкий диапазон частот.',
+            'case_result': 'Показаны 10 кГц, 5 мСм/см, ток 2 нА и барьер 0,7 кэВ.',
+            'weak_signal': 'Прототип работает при 10 кГц и снижает фазовый шум.',
+        })
+        with patch.object(query_llm, '_query_llm', return_value=payload) as request:
+            result = query_llm.analyze_abstract('A microwave oscillator is measured.')
+        request.assert_called_once()
+        self.assertIn('10 кГц', result['case_result'])
+        self.assertIn('мСм/см', result['case_result'])
+        self.assertIn('нА', result['case_result'])
+        self.assertIn('кэВ', result['case_result'])
+        self.assertTrue(query_llm.has_corrupt_text('Показан пиролЦельный результат.'))
+
+    def test_scientific_camelcase_name_is_not_corrupt_text(self):
+        from website import query_llm
+
+        summary = 'Схема ФитцХью—Нагумо регулирует активность нейронной цепи.'
+        self.assertFalse(query_llm.has_corrupt_text(summary))
+        self.assertTrue(query_llm.is_valid_description(summary, 'Neural circuit abstract.'))
+        payload = json.dumps({
+            'summary': summary,
+            'problem': 'Управление активностью цепи.',
+            'advantage': 'Регулируемое шунтирование тока.',
+            'case_result': 'Показана работа схемы.',
+            'weak_signal': 'Проверена мемристивная нейронная схема.',
+        }, ensure_ascii=False)
+        self.assertEqual(query_llm._parse_article_analysis(payload)['summary'], summary)
+        self.assertTrue(query_llm.has_corrupt_text('Обнаружен пиролЦельный результат.'))
+
+    def test_cached_empty_analysis_is_repaired_without_model_rebuild(self):
+        from website import query_llm
+
+        cached = pd.read_parquet(self.dataset)
+        for field in ('llm_description', 'llm_problem', 'llm_advantage', 'llm_case_result'):
+            cached.loc[0, field] = 'None'
+        cached.to_parquet(self.dataset)
+        self.assertFalse(views._dataset_is_ready(self.dataset, self.corpus))
+        analysis = {
+            'summary': 'Sensor measures glucose.',
+            'problem': 'Glucose monitoring.',
+            'advantage': 'Optical measurement.',
+            'case_result': 'Prototype demonstrated.',
+            'weak_signal': 'Optical sensor prototype was demonstrated.',
+        }
+        with patch('website.main.model_dataset_is_ready', return_value=True), \
+             patch('website.main.build_dataset_for_query') as build, \
+             patch.object(query_llm, 'analyze_abstract', return_value=analysis) as analyze, \
+             patch.object(jobs, '_jobs', {}):
+            jobs._run('test')
+            self.assertEqual(jobs.status('test'), 'complete')
+        build.assert_not_called()
+        analyze.assert_called_once()
+        self.assertTrue(views._dataset_is_ready(self.dataset, self.corpus))
+        result = pd.read_parquet(self.dataset)
+        self.assertEqual(result.loc[0, 'llm_case_result'], 'Prototype demonstrated.')
+
+    def test_failed_analysis_is_not_marked_as_completed(self):
+        from website import query_llm
+
+        cached = pd.read_parquet(self.dataset)
+        cached.loc[0, 'llm_description'] = 'None'
+        cached.to_parquet(self.dataset)
+        empty = dict.fromkeys(
+            ('summary', 'problem', 'advantage', 'case_result', 'weak_signal'), 'None'
+        )
+        with patch('website.main.model_dataset_is_ready', return_value=True), \
+             patch('website.main.build_dataset_for_query') as build, \
+             patch.object(query_llm, 'analyze_abstract', return_value=empty), \
+             patch.object(jobs, '_jobs', {}):
+            jobs._run('test')
+            self.assertEqual(jobs.status('test'), 'failed')
+        build.assert_not_called()
+        self.assertFalse(views._dataset_is_ready(self.dataset, self.corpus))
+        self.assertTrue(pd.isna(pd.read_parquet(self.dataset).loc[0, 'llm_analysis_version']))
 
     def test_old_text_cache_is_enriched_without_rebuilding_model(self):
         from website import query_llm
@@ -390,6 +523,13 @@ class WebsiteTests(SimpleTestCase):
             self.assertEqual(query_llm.translate_article_title(source), source)
             self.assertEqual(query.call_count, 2)
 
+        with patch.object(
+            query_llm, '_query_llm',
+            side_effect=[query_llm.requests.Timeout(), valid],
+        ) as query:
+            self.assertEqual(query_llm.translate_article_title(source), valid)
+            self.assertEqual(query.call_count, 2)
+
     def test_semantic_duplicates_are_replaced_by_lower_ranked_articles(self):
         from website import diversity
 
@@ -492,6 +632,18 @@ class WebsiteTests(SimpleTestCase):
         self.assertTrue(is_review_article('A systematic review of sensors', 'article'))
         self.assertTrue(is_review_article('Обзор методов диагностики', None))
         self.assertFalse(is_review_article('A new sensor for glucose monitoring', 'article'))
+        self.assertTrue(is_review_article(
+            'Applications and Advances of Machine Learning', 'article',
+            'This paper reviews recent progress in the application of ML techniques.',
+        ))
+        self.assertTrue(is_review_article(
+            'Toward AI ecosystems', 'article',
+            'Here, we critically review the progress of AI applications.',
+        ))
+        self.assertFalse(is_review_article(
+            'Guidelines for imaging', 'article',
+            'We demonstrate atomic-resolution imaging with a new method.',
+        ))
 
         pd.DataFrame([
             {'doc_id': 'W1', 'feature': 1.0},
@@ -557,6 +709,12 @@ class RelevanceGateTests(SimpleTestCase):
             with self.assertRaises(RuntimeError):
                 relevance_gate._classify_batch('Защита ИИ', works)
 
+        with patch.object(relevance_gate, '_query_llm', side_effect=[
+            RuntimeError('invalid response'), '{"relevant_ids":["W2"]}',
+        ]) as llm:
+            self.assertEqual(relevance_gate._classify_batch('Защита ИИ', works), {'W2'})
+        self.assertEqual(llm.call_count, 2)
+
     def test_rejected_works_are_replaced_and_decisions_cached(self):
         from website import relevance_gate
 
@@ -603,6 +761,34 @@ class RelevanceGateTests(SimpleTestCase):
                 relevance_gate.select_relevant_diverse_top(ranked, texts, 'Защита ИИ', cache),
                 ([], []),
             )
+
+    def test_expired_budget_uses_first_completed_relevance_batch(self):
+        from website import relevance_gate
+
+        ranked = pd.DataFrame({
+            'doc_id': [f'W{i}' for i in range(25)],
+            'model_confidence': list(range(25, 0, -1)),
+        })
+        texts = pd.DataFrame({
+            'doc_id': [f'W{i}' for i in range(25)],
+            'title': [f'Title {i}' for i in range(25)],
+            'abstract_text': [f'Abstract {i}' for i in range(25)],
+        })
+        budget = SearchBudget(deadline=0)
+        cache = self.dataset.with_name('relevance-budget.json')
+
+        def select(rows, _texts, limit):
+            indices = rows.index.tolist()[:limit]
+            return indices, [0.0] * len(indices)
+
+        with patch.object(relevance_gate, '_classify_batch', return_value={'W1', 'W21'}) as classify, \
+             patch('website.diversity.select_diverse_top', side_effect=select):
+            indices, _ = relevance_gate.select_relevant_diverse_top(
+                ranked, texts, 'test', cache, limit=2, budget=budget,
+            )
+        self.assertEqual(indices, [1])
+        self.assertEqual(classify.call_count, 1)
+        self.assertTrue(budget.truncated)
 
 
 class EvidenceTests(SimpleTestCase):

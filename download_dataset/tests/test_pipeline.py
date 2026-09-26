@@ -21,7 +21,6 @@ class PipelineTests(unittest.TestCase):
                 def get(self, endpoint, **params):
                     if params['page'] == 2 and self.paused:
                         raise Paused('test interruption')
-                    # The second page deliberately repeats one ID.
                     start = 0 if params['page'] == 1 else 99
                     return {'results': [{
                         'id': f'https://openalex.org/W{i}', 'publication_year': 2010,

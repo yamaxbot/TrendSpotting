@@ -16,18 +16,12 @@ def restore_abstract(inverted_index):
 
 
 def normalize_work(work):
-    # -------------------------
-    # Primary topic
-    # -------------------------
 
     primary_topic = work.get("primary_topic") or {}
 
     domain = primary_topic.get("domain") or {}
     field = primary_topic.get("field") or {}
 
-    # -------------------------
-    # Topics
-    # -------------------------
 
     topics_raw = work.get("topics") or []
 
@@ -37,9 +31,6 @@ def normalize_work(work):
         if topic.get("display_name")
     ]
 
-    # -------------------------
-    # Keywords
-    # -------------------------
 
     keywords_raw = work.get("keywords") or []
 
@@ -49,9 +40,6 @@ def normalize_work(work):
         if keyword.get("display_name")
     ]
 
-    # -------------------------
-    # Authors
-    # -------------------------
 
     authorships = work.get("authorships") or []
 
@@ -83,9 +71,6 @@ def normalize_work(work):
             if name:
                 institutions.add(name)
 
-    # -------------------------
-    # Source
-    # -------------------------
 
     primary_location = (
         work.get("primary_location") or {}
@@ -95,17 +80,11 @@ def normalize_work(work):
         primary_location.get("source") or {}
     )
 
-    # -------------------------
-    # References
-    # -------------------------
 
     referenced_works = (
         work.get("referenced_works") or []
     )
 
-    # -------------------------
-    # Result
-    # -------------------------
 
     return {
         "id": work.get("id"),
@@ -130,7 +109,6 @@ def normalize_work(work):
         "publication_date":
             work.get("publication_date"),
 
-        # Topic
         "primary_topic":
             primary_topic.get("display_name"),
 
@@ -143,33 +121,26 @@ def normalize_work(work):
         "field_id":
             field.get("id"),
 
-        # Все topics
         "topics": topics,
         "topics_raw": topics_raw,
 
-        # Keywords
         "keywords": keywords,
 
-        # Authors
         "authors": authors,
         "authors_ids": authors_ids,
         "authorships": authorships,
 
-        # Institutions
         "institutions": list(institutions),
 
-        # Citations
         "cited_by_count":
             work.get("cited_by_count", 0),
 
         "counts_by_year":
             work.get("counts_by_year") or [],
 
-        # References
         "referenced_works_ids":
             referenced_works,
 
-        # Source
         "source":
             source.get("display_name"),
 
@@ -179,7 +150,6 @@ def normalize_work(work):
         "source_type":
             source.get("type"),
 
-        # Work type
         "type":
             work.get("type"),
 
