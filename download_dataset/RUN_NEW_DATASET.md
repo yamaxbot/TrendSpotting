@@ -1,5 +1,7 @@
 # Как запускать new_dataset pipeline
 
+> Исторический план на 5 млн работ: пути и объём ниже устарели. Текущая конфигурация — `new_dataset/config_new.json`, краткая инструкция — [README.md](README.md).
+
 Изоляция: только `download_dataset/new_dataset/`. Parent `download_dataset/` не трогать.
 
 1. В `TrendSpotting/.env` — `OPENALEX_API_KEY`.

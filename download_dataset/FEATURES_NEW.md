@@ -1,5 +1,7 @@
 # new_dataset (2017-2026, 500k/year)
 
+> Исторический план; фактический объём задаёт `new_dataset/config_new.json`. Текущий обзор — [README.md](README.md).
+
 Корпус: 10 лет × 500 000 = **5 000 000** статей.
 Изолирован от parent `download_dataset/` (соавтор): всё в `new_dataset/`.
 

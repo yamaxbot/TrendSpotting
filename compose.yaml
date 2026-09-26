@@ -1,0 +1,29 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:${PORT:-8000}:8000"
+    environment:
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost,testserver}
+      OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
+      KIE_API_KEY: ${KIE_API_KEY:-}
+    volumes:
+      - site_data:/app/website/data
+      - parser_logs:/app/website/logics
+      - huggingface_cache:/home/app/.cache/huggingface
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5).close()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  site_data:
+  parser_logs:
+  huggingface_cache:
