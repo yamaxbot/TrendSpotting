@@ -4,6 +4,7 @@ Job state is process-local; restarting the server interrupts unfinished work.
 Completed results remain in parquet files.
 """
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
@@ -16,6 +17,7 @@ _jobs = {}
 def _run(query):
     from on_demand_parsing.time_budget import SearchBudget
     from website.main import (
+        build_dataset_from_corpus,
         build_dataset_for_query,
         get_built_dataset_path,
         get_parsed_corpus_path,
@@ -25,13 +27,21 @@ def _run(query):
 
     with _lock:
         _jobs[query] = "running"
+    started = time.monotonic()
     budget = SearchBudget.start()
     try:
         corpus_path = get_parsed_corpus_path(query)
         path = get_built_dataset_path(query)
         if not model_dataset_is_ready(path, corpus_path):
-            path = build_dataset_for_query(query, budget=budget)
-        _load_trends(path, corpus_path, generate_llm_texts=True, budget=budget)
+            if corpus_path.is_file():
+                path = build_dataset_from_corpus(query, corpus_path, budget=budget)
+            else:
+                path = build_dataset_for_query(query, budget=budget)
+        text_started = time.monotonic()
+        try:
+            _load_trends(path, corpus_path, generate_llm_texts=True, budget=budget)
+        finally:
+            logger.info("Search stage card texts: %.1f s", time.monotonic() - text_started)
         if not _dataset_is_ready(path, corpus_path):
             raise RuntimeError("Search results remain incomplete after enrichment")
     except Exception:
@@ -39,6 +49,7 @@ def _run(query):
         state = "failed"
     else:
         state = "complete"
+    logger.info("Search total: %.1f s; status=%s", time.monotonic() - started, state)
     with _lock:
         _jobs[query] = state
 

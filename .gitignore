@@ -28,3 +28,8 @@ on_demand_parsing/data
 education/catboost_info
 logics/
 test_dataset/
+
+education2/
+!education2/
+education2/*
+!education2/README.md

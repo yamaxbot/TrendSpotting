@@ -26,7 +26,7 @@ from .statistics import YEARS, publication_counts
 
 
 logger = logging.getLogger(__name__)
-EVIDENCE_VERSION = "openalex-related-v5"
+EVIDENCE_VERSION = "openalex-related-v6"
 MAX_CANDIDATES_PER_YEAR = 1000
 MAX_SOURCES = 5
 MIN_COSINE_SIMILARITY = 0.72
@@ -283,9 +283,12 @@ def load_cached(query, anchor):
 
 
 def _upgrade_cached_statistics(query, anchor):
-    """Reuse v4's strict links and signal instead of repeating their search."""
+    """Recount an existing result without repeating strict source matching."""
     old = _read_cache(query, anchor)
-    if not _cache_matches(old, anchor, "openalex-related-v4"):
+    if not any(
+        _cache_matches(old, anchor, version)
+        for version in ("openalex-related-v4", "openalex-related-v5")
+    ):
         return None
     try:
         statistics_query, thematic_years = publication_counts(
@@ -299,8 +302,8 @@ def _upgrade_cached_statistics(query, anchor):
         "version": EVIDENCE_VERSION,
         "statistics_query": statistics_query,
         "years": thematic_years,
-        "strict_years": old.get("years"),
-        "strict_complete": old.get("complete"),
+        "strict_years": old.get("strict_years", old.get("years")),
+        "strict_complete": old.get("strict_complete", old.get("complete")),
         "complete": thematic_years is not None,
     }
 

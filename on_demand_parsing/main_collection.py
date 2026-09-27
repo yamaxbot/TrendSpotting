@@ -8,7 +8,7 @@ from on_demand_parsing.openalex_client import (
 )
 
 
-MAIN_LIMIT = 8000
+MAIN_LIMIT = 5000
 EXPLORATION_LIMIT = 1000
 OPENALEX_WORKERS = 3
 

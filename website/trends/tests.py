@@ -34,7 +34,7 @@ class WebsiteTests(SimpleTestCase):
                        'diversity_max_similarity': 0.0,
                        'model_threshold': 0.2436524675,
                        'model_version': 'catboost-random-split-2026-09-v1',
-                       'ranking_version': 'intent-relevance-v1',
+                       'ranking_version': 'intent-relevance-v4',
                        'llm_title': 'Перевод', 'llm_title_version': 'exact-v2',
                        'llm_description': 'Summary',
                         'llm_analysis_version': 'grounded-v2',
@@ -64,6 +64,16 @@ class WebsiteTests(SimpleTestCase):
             self.assertNotContains(detail, 'javascript:')
             self.assertEqual(self.client.get('/trend/unknown/', {'q': 'test'}).status_code, 404)
             start.assert_not_called()
+
+    def test_ranking_change_rebuilds_from_cached_corpus(self):
+        with patch('website.main.model_dataset_is_ready', return_value=False), \
+             patch('website.main.build_dataset_from_corpus', return_value=self.dataset) as rebuild, \
+             patch('website.main.build_dataset_for_query') as parse, \
+             patch.object(jobs, '_jobs', {}):
+            jobs._run('test')
+            self.assertEqual(jobs.status('test'), 'complete')
+        rebuild.assert_called_once()
+        parse.assert_not_called()
 
     def test_deadline_keeps_completed_card_and_marks_partial_result(self):
         corpus = pd.read_parquet(self.corpus)
@@ -118,6 +128,7 @@ class WebsiteTests(SimpleTestCase):
             ],
             'complete': False,
             'search_phrase': 'photonic crystal fiber',
+            'statistics_query': '"photonic crystal" AND fiber',
             'sources': [{'title': 'Related paper', 'date': '2025-01-01',
                          'source_type': 'article', 'venue': 'Journal',
                          'url': 'https://doi.org/10.1/related'}],
@@ -138,6 +149,8 @@ class WebsiteTests(SimpleTestCase):
         self.assertContains(response, 'class="source-link-label"')
         self.assertContains(response, 'Показана работа сенсора')
         self.assertContains(response, 'class="publication-chart"')
+        self.assertContains(response, 'Публикации по теме этой статьи')
+        self.assertContains(response, 'а не по всему запросу')
         self.assertContains(response, '<polyline')
         self.assertNotContains(response, 'year-stat-track')
         self.assertNotContains(response, 'Поисковая формулировка')
@@ -277,6 +290,159 @@ class WebsiteTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             query_llm._parse_article_analysis('{"summary":"Only one field"}')
 
+    def test_batch_analysis_maps_ids_and_keeps_partial_valid_fields(self):
+        from website import query_llm
+
+        articles = [
+            {'id': 'W1', 'title': 'Battery one', 'abstract': 'A battery is tested.'},
+            {'id': 'W2', 'title': 'Battery two', 'abstract': 'A cathode is tested.'},
+        ]
+        response = {'articles': [
+            {'id': 'W2', 'title': 'Вторая батарея', 'summary': 'Изучен катод.',
+             'problem': 'Повысить стабильность.', 'advantage': 'Новый состав.',
+             'case_result': ['invalid'], 'weak_signal': 'Представлен новый катод.'},
+            {'id': 'W1', 'title': 'Первая батарея', 'summary': 'Изучена батарея.',
+             'problem': 'Повысить ёмкость.', 'advantage': 'Новый электрод.',
+             'case_result': 'Показана работа электрода.',
+             'weak_signal': 'Продемонстрирован новый электрод.'},
+            {'id': 'unknown', 'title': 'Лишняя статья'},
+        ]}
+        with patch.object(query_llm, '_query_llm', return_value=json.dumps(response, ensure_ascii=False)) as call:
+            result = query_llm.analyze_articles_batch(articles)
+        call.assert_called_once()
+        self.assertEqual(set(result), {'W1', 'W2'})
+        self.assertEqual(result['W1']['title'], 'Первая батарея')
+        self.assertEqual(result['W1']['analysis']['case_result'], 'Показана работа электрода.')
+        self.assertEqual(result['W2']['title'], 'Вторая батарея')
+        self.assertEqual(result['W2']['analysis']['case_result'], 'None')
+        self.assertTrue(result['W2']['analysis']['problem'])
+
+    def test_batch_enrichment_retries_only_invalid_article(self):
+        from website import query_llm
+
+        corpus = pd.read_parquet(self.corpus)
+        predictions = pd.read_parquet(self.dataset)
+        for index in (2, 3):
+            article = corpus.iloc[0].copy()
+            article['doc_id'] = f'W{index}'
+            corpus = pd.concat([corpus, article.to_frame().T], ignore_index=True)
+            prediction = predictions.iloc[0].copy()
+            prediction['doc_id'] = f'W{index}'
+            predictions = pd.concat([predictions, prediction.to_frame().T], ignore_index=True)
+        for field in (
+            'llm_title', 'llm_description', 'llm_weak_signal', 'llm_analysis_version',
+            'llm_problem', 'llm_advantage', 'llm_case_result',
+        ):
+            predictions[field] = None
+        corpus.to_parquet(self.corpus, index=False)
+        predictions.to_parquet(self.dataset, index=False)
+
+        analysis = {
+            'summary': 'Изучена батарея.', 'problem': 'Повысить ёмкость.',
+            'advantage': 'Новый электрод.', 'case_result': 'Показан результат.',
+            'weak_signal': 'Продемонстрирован новый электрод.',
+        }
+        batch = {
+            doc_id: {'title': f'Статья {doc_id}', 'analysis': analysis if doc_id != 'W2' else None}
+            for doc_id in ('W1', 'W2', 'W3')
+        }
+        with patch.object(query_llm, 'analyze_articles_batch', return_value=batch) as grouped, \
+             patch.object(query_llm, 'analyze_abstract', return_value=analysis) as single, \
+             patch.object(query_llm, 'translate_article_title') as translate:
+            views._load_trends(self.dataset, self.corpus, generate_llm_texts=True)
+        grouped.assert_called_once()
+        self.assertEqual(len(grouped.call_args.args[0]), 3)
+        single.assert_called_once()
+        translate.assert_not_called()
+        saved = pd.read_parquet(self.dataset)
+        self.assertEqual(saved['llm_analysis_version'].notna().sum(), 3)
+
+    def test_two_article_batches_run_concurrently(self):
+        from threading import Barrier
+        from website import query_llm
+
+        corpus = pd.read_parquet(self.corpus)
+        predictions = pd.read_parquet(self.dataset)
+        for index in range(2, 7):
+            article = corpus.iloc[0].copy()
+            article['doc_id'] = f'W{index}'
+            corpus = pd.concat([corpus, article.to_frame().T], ignore_index=True)
+            prediction = predictions.iloc[0].copy()
+            prediction['doc_id'] = f'W{index}'
+            predictions = pd.concat([predictions, prediction.to_frame().T], ignore_index=True)
+        for field in (
+            'llm_title', 'llm_description', 'llm_weak_signal', 'llm_analysis_version',
+            'llm_problem', 'llm_advantage', 'llm_case_result',
+        ):
+            predictions[field] = None
+        corpus.to_parquet(self.corpus, index=False)
+        predictions.to_parquet(self.dataset, index=False)
+
+        barrier = Barrier(2)
+        analysis = {
+            'summary': 'Study result.', 'problem': 'Research problem.',
+            'advantage': 'New method.', 'case_result': 'Measured result.',
+            'weak_signal': 'Study demonstrates a new method.',
+        }
+
+        def grouped(articles, *, timeout):
+            barrier.wait(timeout=5)
+            return {
+                article['id']: {
+                    'title': '\u0421\u0442\u0430\u0442\u044c\u044f ' + article['id'],
+                    'analysis': analysis,
+                }
+                for article in articles
+            }
+
+        with patch.object(query_llm, 'analyze_articles_batch', side_effect=grouped) as batch, \
+             patch.object(query_llm, 'analyze_abstract', side_effect=AssertionError('unexpected fallback')), \
+             patch.object(query_llm, 'translate_article_title', side_effect=AssertionError('unexpected fallback')):
+            views._load_trends(self.dataset, self.corpus, generate_llm_texts=True)
+        self.assertEqual(batch.call_count, 2)
+        saved = pd.read_parquet(self.dataset)
+        self.assertEqual(saved['llm_analysis_version'].notna().sum(), 6)
+
+    def test_failed_article_batch_is_retried_before_individual_requests(self):
+        from website import query_llm
+
+        corpus = pd.read_parquet(self.corpus)
+        predictions = pd.read_parquet(self.dataset)
+        for index in (2, 3):
+            article = corpus.iloc[0].copy()
+            article['doc_id'] = f'W{index}'
+            corpus = pd.concat([corpus, article.to_frame().T], ignore_index=True)
+            prediction = predictions.iloc[0].copy()
+            prediction['doc_id'] = f'W{index}'
+            predictions = pd.concat([predictions, prediction.to_frame().T], ignore_index=True)
+        for field in (
+            'llm_title', 'llm_description', 'llm_weak_signal', 'llm_analysis_version',
+            'llm_problem', 'llm_advantage', 'llm_case_result',
+        ):
+            predictions[field] = None
+        corpus.to_parquet(self.corpus, index=False)
+        predictions.to_parquet(self.dataset, index=False)
+
+        analysis = {
+            'summary': 'Study result.', 'problem': 'Research problem.',
+            'advantage': 'New method.', 'case_result': 'Measured result.',
+            'weak_signal': 'Study demonstrates a new method.',
+        }
+        batch = {
+            f'W{index}': {
+                'title': '\u0421\u0442\u0430\u0442\u044c\u044f ' + f'W{index}',
+                'analysis': analysis,
+            }
+            for index in (1, 2, 3)
+        }
+        with patch.object(query_llm, 'analyze_articles_batch',
+                          side_effect=[RuntimeError('temporary'), batch]) as grouped, \
+             patch.object(query_llm, 'analyze_abstract', side_effect=AssertionError('unexpected fallback')), \
+             patch.object(query_llm, 'translate_article_title', side_effect=AssertionError('unexpected fallback')):
+            views._load_trends(self.dataset, self.corpus, generate_llm_texts=True)
+        self.assertEqual(grouped.call_count, 2)
+        self.assertEqual(pd.read_parquet(self.dataset)['llm_analysis_version'].notna().sum(), 3)
+
     def test_article_analysis_retries_empty_and_transient_responses(self):
         from website import query_llm
 
@@ -297,6 +463,73 @@ class WebsiteTests(SimpleTestCase):
             result = query_llm.analyze_abstract('A sensor abstract.')
         self.assertEqual(request.call_count, 3)
         self.assertEqual(result['summary'], 'Sensor measures glucose.')
+
+    def test_missing_case_result_is_recovered_without_rewriting_other_fields(self):
+        from website import query_llm
+
+        cached = pd.read_parquet(self.dataset)
+        cached.loc[0, 'llm_description'] = None
+        cached.to_parquet(self.dataset, index=False)
+        analysis = {
+            'summary': 'Study result.', 'problem': 'Research problem.',
+            'advantage': 'New method.', 'case_result': 'None',
+            'weak_signal': 'Study demonstrates a new method.',
+        }
+        with patch.object(query_llm, 'analyze_abstract', return_value=analysis), \
+             patch.object(query_llm, 'recover_case_result', return_value='Noise fell by 1.7 dB.') as recover:
+            views._load_trends(self.dataset, self.corpus, generate_llm_texts=True)
+        recover.assert_called_once()
+        saved = pd.read_parquet(self.dataset).iloc[0]
+        self.assertEqual(saved['llm_case_result'], 'Noise fell by 1.7 dB.')
+        self.assertEqual(saved['llm_problem'], 'Research problem.')
+
+    def test_cached_card_can_recover_only_its_missing_case_result(self):
+        from website import query_llm
+
+        cached = pd.read_parquet(self.dataset)
+        cached.loc[0, 'llm_case_result'] = 'None'
+        cached.to_parquet(self.dataset, index=False)
+        with patch.object(query_llm, 'recover_case_result', return_value='Noise fell by 1.7 dB.') as recover, \
+             patch.object(query_llm, 'analyze_abstract') as analyze:
+            views._load_trends(self.dataset, self.corpus, generate_llm_texts=True)
+        recover.assert_called_once()
+        analyze.assert_not_called()
+        self.assertEqual(pd.read_parquet(self.dataset).loc[0, 'llm_case_result'], 'Noise fell by 1.7 dB.')
+
+    def test_case_recovery_rejects_unsubstantiated_numbers(self):
+        from website import query_llm
+
+        abstract = (
+            'We experimentally demonstrate distributed quantum sensing. '
+            'The measured quantum noise is reduced by 1.7 plus or minus 0.3 dB. '
+        ) * 3
+        with patch.object(query_llm, '_query_llm',
+                          return_value='{"case_result":"Quantum noise fell by 1,7 and 0,3 dB."}') as call:
+            self.assertEqual(
+                query_llm.recover_case_result(abstract),
+                'Quantum noise fell by 1,7 and 0,3 dB.',
+            )
+        call.assert_called_once()
+        with patch.object(query_llm, '_query_llm',
+                          return_value='{"case_result":"Quantum noise fell by 9.8 dB."}'):
+            self.assertEqual(query_llm.recover_case_result(abstract), 'None')
+        with patch.object(query_llm, '_query_llm') as call:
+            self.assertEqual(query_llm.recover_case_result('A new phosphor was synthesized.'), 'None')
+        call.assert_not_called()
+
+    def test_case_recovery_retries_malformed_json(self):
+        from website import query_llm
+
+        abstract = (
+            'We experimentally demonstrate quantum noise reduction of 5.2 dB. '
+            'The measured result improves the detector sensitivity. '
+        ) * 3
+        with patch.object(query_llm, '_query_llm', side_effect=[
+            'not json', '{"case_result":"Quantum noise fell by 5.2 dB."}',
+        ]) as request:
+            result = query_llm.recover_case_result(abstract)
+        self.assertEqual(result, 'Quantum noise fell by 5.2 dB.')
+        self.assertEqual(request.call_count, 2)
 
     def test_article_analysis_accepts_scientific_units(self):
         from website import query_llm
@@ -640,6 +873,19 @@ class WebsiteTests(SimpleTestCase):
             'Toward AI ecosystems', 'article',
             'Here, we critically review the progress of AI applications.',
         ))
+        self.assertTrue(is_review_article(
+            'Recent progress and advances of sodium-ion cathodes', 'article',
+        ))
+        self.assertTrue(is_review_article(
+            'Advances and Prospects of Lignin-Derived Hard Carbons', 'article',
+        ))
+        self.assertTrue(is_review_article(
+            'Hydrotalcite-derived cathodes: progress and perspectives', 'article',
+        ))
+        self.assertTrue(is_review_article(
+            'A new cathode chemistry', 'article',
+            'This review examines recent methods.',
+        ))
         self.assertFalse(is_review_article(
             'Guidelines for imaging', 'article',
             'We demonstrate atomic-resolution imaging with a new method.',
@@ -714,6 +960,120 @@ class RelevanceGateTests(SimpleTestCase):
         ]) as llm:
             self.assertEqual(relevance_gate._classify_batch('Защита ИИ', works), {'W2'})
         self.assertEqual(llm.call_count, 2)
+
+    def test_named_ion_chemistry_must_be_central_to_article(self):
+        from website import relevance_gate
+
+        ranked = pd.DataFrame({
+            'doc_id': ['W1', 'W2', 'W3'],
+            'model_confidence': [90.0, 80.0, 70.0],
+        })
+        texts = pd.DataFrame({
+            'doc_id': ['W1', 'W2', 'W3'],
+            'title': ['Voltage prediction for alkali-metal batteries',
+                      'Black phosphorus dots for energy storage',
+                      'New cathode for sodium-ion batteries'],
+            'abstract_text': ['Battery voltage prediction.',
+                              'Potential use in sodium-ion cells.',
+                              'We demonstrate a new sodium-ion cathode.'],
+            'stratum': ['sodium-ion batteries'] * 3,
+        })
+        cache = self.dataset.with_name('ion-relevance.json')
+        with patch.object(relevance_gate, '_classify_batch', return_value={'W1', 'W2', 'W3'}) as classify, \
+             patch('website.diversity.select_diverse_top',
+                   side_effect=lambda rows, _texts, limit: (rows.index.tolist(), [0.0] * len(rows))):
+            indices, _ = relevance_gate.select_relevant_diverse_top(
+                ranked, texts, 'натрий-ионные аккумуляторы', cache,
+            )
+        self.assertEqual(indices, [2])
+        self.assertEqual([work['id'] for work in classify.call_args.args[1]], ['W3'])
+
+    def test_quantum_sensing_rejects_conventional_sensor_without_quantum_method(self):
+        from website import relevance_gate
+
+        ranked = pd.DataFrame({
+            'doc_id': ['W1', 'W2', 'W3'],
+            'model_confidence': [90.0, 80.0, 70.0],
+        })
+        texts = pd.DataFrame({
+            'doc_id': ['W1', 'W2', 'W3'],
+            'title': [
+                'Phosphor for optical temperature sensing',
+                'Spin defects in boron nitride as strain sensors',
+                'Magnetic gradient compensation for atomic sensors',
+            ],
+            'abstract_text': [
+                'A conventional phosphor is used to measure temperature.',
+                'Boron-vacancy color centers enable strain sensing.',
+                'A field gradient compensation system improves atomic sensors.',
+            ],
+            'stratum': ['quantum sensors'] * 3,
+        })
+        cache = self.dataset.with_name('quantum-relevance.json')
+        with patch.object(relevance_gate, '_classify_batch',
+                          side_effect=lambda _query, works: {work['id'] for work in works}) as classify, \
+             patch('website.diversity.select_diverse_top',
+                   side_effect=lambda rows, _texts, limit: (
+                       rows.index.tolist()[:limit], [0.0] * min(len(rows), limit),
+                   )):
+            indices, _ = relevance_gate.select_relevant_diverse_top(
+                ranked, texts, 'quantum sensors', cache,
+            )
+        self.assertEqual(indices, [1, 2])
+        self.assertEqual([work['id'] for work in classify.call_args.args[1]], ['W2', 'W3'])
+
+    def test_relevance_search_can_fill_from_later_candidates(self):
+        from website import relevance_gate
+
+        ranked = pd.DataFrame({
+            'doc_id': [f'W{i}' for i in range(121)],
+            'model_confidence': list(range(121, 0, -1)),
+        })
+        texts = pd.DataFrame({
+            'doc_id': ranked['doc_id'],
+            'title': [f'Original study {i}' for i in range(121)],
+            'abstract_text': ['Original experimental result'] * 121,
+        })
+        cache = self.dataset.with_name('extended-relevance.json')
+        with patch.object(relevance_gate, '_classify_batch', return_value={'W120'}), \
+             patch('website.diversity.select_diverse_top',
+                   side_effect=lambda rows, _texts, limit: (rows.index.tolist(), [0.0] * len(rows))):
+            indices, _ = relevance_gate.select_relevant_diverse_top(
+                ranked, texts, 'energy storage', cache,
+            )
+        self.assertEqual(indices, [120])
+
+    def test_two_relevance_batches_run_concurrently_and_keep_rank_order(self):
+        from threading import Barrier
+        from website import relevance_gate
+
+        ranked = pd.DataFrame({
+            'doc_id': [f'W{i}' for i in range(60)],
+            'model_confidence': list(range(60, 0, -1)),
+        })
+        texts = pd.DataFrame({
+            'doc_id': ranked['doc_id'],
+            'title': [f'Title {i}' for i in range(60)],
+            'abstract_text': ['Original result'] * 60,
+        })
+        barrier = Barrier(2)
+
+        def classify(_query, works):
+            if works[0]['id'] != 'W0':
+                barrier.wait(timeout=5)
+            return {work['id'] for work in works}
+
+        cache = self.dataset.with_name('parallel-relevance.json')
+        with patch.object(relevance_gate, '_classify_batch', side_effect=classify) as llm, \
+             patch('website.diversity.select_diverse_top',
+                   side_effect=lambda rows, _texts, limit: (
+                       rows.index.tolist()[:limit], [0.0] * min(len(rows), limit),
+                   )):
+            indices, _ = relevance_gate.select_relevant_diverse_top(
+                ranked, texts, 'energy storage', cache, limit=50,
+            )
+        self.assertEqual(llm.call_count, 3)
+        self.assertEqual(indices, list(range(50)))
 
     def test_rejected_works_are_replaced_and_decisions_cached(self):
         from website import relevance_gate
@@ -924,6 +1284,36 @@ class EvidenceTests(SimpleTestCase):
             '"Jailbreaking LLMs"',
         )
 
+    def test_thematic_query_requires_application_for_generic_ai_phrase(self):
+        self.assertEqual(
+            statistics.thematic_query(
+                'Artificial Intelligence in Translation: Challenges and Opportunities',
+                'Artificial intelligence supports neural translation across languages.',
+            ),
+            '"Artificial Intelligence" AND Translation',
+        )
+        with self.assertRaises(ValueError):
+            statistics.thematic_query(
+                'Artificial Intelligence: Challenges and Opportunities',
+                'Artificial intelligence is growing rapidly.',
+            )
+
+    def test_thematic_query_keeps_named_battery_chemistry(self):
+        self.assertEqual(
+            statistics.thematic_query(
+                'Layered oxide cathodes for sodium-ion batteries',
+                'Layered oxide materials improve cathode performance.',
+            ),
+            '"oxide cathodes" AND sodium',
+        )
+        self.assertEqual(
+            statistics.thematic_query(
+                'Local structure of hard carbon for sodium-ion batteries',
+                'The HC model explains diffusion in battery materials.',
+            ),
+            '"hard carbon" AND sodium',
+        )
+
     def test_thematic_counts_use_one_grouped_request_without_topic_or_scan_limit(self):
         class FakeResponse:
             def raise_for_status(self):
@@ -984,6 +1374,31 @@ class EvidenceTests(SimpleTestCase):
         self.assertEqual(upgraded['sources'], old['sources'])
         self.assertEqual(upgraded['signal_text'], old['signal_text'])
         self.assertEqual(upgraded['version'], evidence.EVIDENCE_VERSION)
+
+    def test_v5_cache_upgrade_preserves_strict_counts(self):
+        anchor = {'doc_id': 'W1', 'title': 'Artificial Intelligence in Translation',
+                  'abstract_text': 'Artificial intelligence aids translation.',
+                  'primary_topic_id': 'T123'}
+        old = {
+            'version': 'openalex-related-v5', 'anchor_id': 'W1',
+            'anchor_title': anchor['title'], 'topic_id': 'T123',
+            'years': [{'year': 2025, 'count': 300000, 'exhaustive': True}],
+            'strict_years': [{'year': 2025, 'count': 3, 'exhaustive': True}],
+            'strict_complete': True, 'sources': [{'doc_id': 'W2'}],
+            'generated_at': evidence.dt.datetime.now(evidence.dt.timezone.utc).isoformat(),
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'cached.json'
+            path.write_text(json.dumps(old), encoding='utf-8')
+            with patch.object(evidence, 'cache_path', return_value=path), \
+                 patch.object(evidence, 'publication_counts', return_value=(
+                     '"Artificial Intelligence" AND Translation',
+                     [{'year': 2025, 'count': 80, 'exhaustive': True}],
+                 )):
+                upgraded = evidence._upgrade_cached_statistics('test', anchor)
+        self.assertEqual(upgraded['years'][0]['count'], 80)
+        self.assertEqual(upgraded['strict_years'], old['strict_years'])
+        self.assertEqual(upgraded['sources'], old['sources'])
 
     def test_application_qualifier_is_kept_for_matching(self):
         self.assertEqual(

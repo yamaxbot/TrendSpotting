@@ -1,5 +1,5 @@
 {
-  "rows": 1000000,
+  "rows": 957909,
   "batches": [
     "part-00000.parquet",
     "part-00001.parquet",
@@ -96,13 +96,9 @@
     "part-00092.parquet",
     "part-00093.parquet",
     "part-00094.parquet",
-    "part-00095.parquet",
-    "part-00096.parquet",
-    "part-00097.parquet",
-    "part-00098.parquet",
-    "part-00099.parquet"
+    "part-00095.parquet"
   ],
-  "file": "openalex_corpus_1m.parquet",
+  "file": "openalex_corpus_partial.parquet",
   "expected_rows": 1000000,
-  "collection_complete": true
+  "collection_complete": false
 }

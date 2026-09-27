@@ -5,13 +5,16 @@ import re
 
 REVIEW_TITLE = re.compile(
     r"\b(?:review|survey|overview|meta[- ]analysis|bibliometric analysis|"
-    r"systematic mapping|mapping study)\b|\b(?:обзор|метаанализ|"
+    r"systematic mapping|mapping study|recent (?:advances|progress|developments)|"
+    r"advances and prospects|progress and perspectives|challenges and progress)\b|"
+    r"\b(?:обзор|метаанализ|"
     r"библиометрическ\w* анализ)\b",
     re.IGNORECASE,
 )
 REVIEW_ABSTRACT = re.compile(
     r"\b(?:this (?:paper|article|study) reviews\b|"
-    r"here,?\s+we (?:critically )?review\b)",
+    r"here,?\s+we (?:critically )?review\b|"
+    r"this review\b)",
     re.IGNORECASE,
 )
 

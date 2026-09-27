@@ -1,57 +1,29 @@
-# Как запускать new_dataset pipeline
+# Офлайн-сбор корпуса OpenAlex
 
-> Исторический план на 5 млн работ: пути и объём ниже устарели. Текущая конфигурация — `new_dataset/config_new.json`, краткая инструкция — [README.md](README.md).
+Эта папка создаёт обучающие корпусы; сайт при пользовательском поиске её не запускает.
 
-Изоляция: только `download_dataset/new_dataset/`. Parent `download_dataset/` не трогать.
+## Структура
 
-1. В `TrendSpotting/.env` — `OPENALEX_API_KEY`.
-2. Collect (резюмируется):
+| Путь | Роль |
+|---|---|
+| `config.json`, `pipeline/` | Первый сборщик: поиск по стратам, исторические метки (`targets.py`), экспорт и проверка |
+| `new_dataset/config_new.json`, `new_dataset/pipeline/` | Новый независимый сборщик с временными группами `past_support`, `train`, `valid`, `test`, `target_support` |
+| `data/`, `new_dataset/new_data/` | Генерируемые партии Parquet, SQLite-состояние, журналы, экспорт и отчёты проверки |
+| `tests/` | Тесты первого сборщика |
+| `FEATURES.md`, `FEATURES_NEW.md` | Заметки о данных и методике признаков; не команды запуска |
 
-```powershell
-cd c:\Users\sevam\Desktop\papers\TrendSpotting\download_dataset\new_dataset
+Актуальный размер нового корпуса задаёт `new_dataset/config_new.json` (`total: 1000000`), а не старое название плана на 5 млн. Результат по текущей конфигурации — `new_dataset/new_data/openalex_corpus_1m.parquet`.
+
+## Как запустить новый сборщик
+
+Заполните `OPENALEX_API_KEY` в корневом `.env`. Из `download_dataset/new_dataset/` выполните:
+
+```bash
 python -m pipeline collect --config config_new.json
-```
-
-Всё пишется в `data/new_data/` (`state.sqlite`, batches, parquet, log).
-Содержимое `data/` кроме `new_data/` не трогаем.
-
-3. Статус:
-
-```powershell
 python -m pipeline status --config config_new.json
-```
-
-4. После добора квот:
-
-```powershell
-python -m pipeline export --config config_new.json
 python -m pipeline validate --config config_new.json
 ```
 
-5. Финал: `download_dataset/new_dataset/data/new_data/openalex_corpus_5m.parquet`
+Сбор возобновляется из SQLite-состояния; `export` можно вызвать отдельно. Команда `validate` ожидает полный объём корпуса и потому может не пройти на частичной выгрузке. Для первого сборщика перейдите в `download_dataset/` и запустите `python -m pipeline collect --config config.json`; затем отдельно доступны команды `targets`, `export`, `validate` и `status`.
 
-Дальше (твои зоны):
-
-```text
-preprocessing/create_features.py  INPUT → download_dataset/new_dataset/data/new_data/openalex_corpus_5m.parquet
-education/test/train_model.py     train 2020-2021 | valid 2022 | test 2023
-                                  # 2017-2019 и 2024-2026 в обучение НЕ идут
-```
-
-## Схема корпуса
-
-- Годы: **2017–2026**, 500k/год → **5 000 000** строк
-- 4 домена; Physical: ≥25% Engineering (field 22)
-- Quality: `has_abstract:true`, `referenced_works_count:>0`
-
-## ML-сплит
-
-| split | years | rows (ожид.) |
-|---|---|---|
-| past support | 2017–2019 | ~1 500 000 (только для past-окна) |
-| train | 2020–2021 | ~1 000 000 |
-| valid | 2022 | ~500 000 |
-| test | 2023 | ~500 000 |
-| target support | 2024–2026 | ~1 500 000 (только для future-окна) |
-
-Бюджет OpenAlex на 5M заметно больше, чем на 3M — collect крутить с `--max-requests` и резюмом.
+После выгрузки `preprocessing/create_features.py` строит таблицу признаков. Обучение модели находится в `education/`, не в этом сборщике.

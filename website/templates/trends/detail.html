@@ -32,11 +32,11 @@
         <a class="analysis-source" href="{{ trend.case_url }}" target="_blank" rel="noopener noreferrer">Открыть оригинал →</a>
       </section>
       <section class="detail-card">
-        <div class="eyebrow"{% if related.statistics_query %} title="{{ related.statistics_query }}"{% endif %}>Тематический поиск OpenAlex</div>
+        <div class="eyebrow">Публикации по теме этой статьи</div>
         <h2>2023–2026</h2>
         {% if timeline %}
           <div class="publication-chart">
-            <svg viewBox="0 0 640 220" role="img" aria-label="Количество работ тематического поиска OpenAlex по годам с 2023 по 2026">
+            <svg viewBox="0 0 640 220" role="img" aria-label="Количество работ OpenAlex по теме этой статьи с 2023 по 2026 год">
               {% for tick in timeline.ticks %}
                 <line class="chart-gridline" x1="70" y1="{{ tick.y }}" x2="592" y2="{{ tick.y }}" />
                 <text class="publication-axis-value" x="50" y="{{ tick.y|add:'5' }}" text-anchor="end">{{ tick.value }}</text>
@@ -48,6 +48,7 @@
               {% endfor %}
             </svg>
           </div>
+          {% if related.statistics_query %}<p class="evidence-note">График показывает работы OpenAlex по формулировке «{{ related.statistics_query }}», составленной из этой статьи, а не по всему запросу «{{ query }}». Ссылки справа проходят отдельную строгую проверку близости.</p>{% endif %}
         {% elif related %}
           <p class="evidence-note">Не удалось получить годовую статистику OpenAlex для этой темы.</p>
         {% elif related_state == 'failed' %}

@@ -1,6 +1,8 @@
 import re
 import sys
 import json
+import logging
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -18,7 +20,8 @@ MODEL_PATH = (
 )
 MODEL_METRICS_PATH = MODEL_PATH.with_name("metrics.json")
 MODEL_VERSION = "catboost-random-split-2026-09-v1"
-RANKING_VERSION = "intent-relevance-v1"
+RANKING_VERSION = "intent-relevance-v4"
+logger = logging.getLogger(__name__)
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -175,6 +178,7 @@ def add_model_targets(
         dataset.to_parquet(dataset_path, index=False)
         return dataset_path
 
+    model_started = time.monotonic()
     model = CatBoostClassifier()
     model.load_model(str(MODEL_PATH))
     feature_names = model.feature_names_
@@ -191,10 +195,12 @@ def add_model_targets(
     dataset["model_threshold"] = model_threshold
     dataset["model_version"] = MODEL_VERSION
     dataset["ranking_version"] = RANKING_VERSION
+    logger.info("Search stage model inference: %.1f s", time.monotonic() - model_started)
+    relevance_started = time.monotonic()
     if corpus_path is None:
         text_columns = [
             column
-            for column in ("doc_id", "title", "abstract_text", "work_type")
+            for column in ("doc_id", "title", "abstract_text", "work_type", "stratum")
             if column in dataset.columns
         ]
         article_texts = dataset[text_columns].copy()
@@ -206,6 +212,8 @@ def add_model_targets(
         corpus_columns = ["doc_id", "title", "abstract_text"]
         if "work_type" in pq.read_schema(corpus_path).names:
             corpus_columns.append("work_type")
+        if "stratum" in pq.read_schema(corpus_path).names:
+            corpus_columns.append("stratum")
         article_texts = pd.read_parquet(
             corpus_path,
             columns=corpus_columns,
@@ -242,6 +250,7 @@ def add_model_targets(
             article_texts,
             limit=15,
         )
+    logger.info("Search stage relevance and diversity: %.1f s", time.monotonic() - relevance_started)
     dataset = dataset.loc[top_indices].copy()
     dataset["search_partial"] = bool(budget and budget.truncated)
     dataset["model_confidence"] = dataset["model_confidence"].round(2)
@@ -288,14 +297,26 @@ def add_model_targets(
 def build_dataset_for_query(query: str, budget=None) -> Path:
     """Собрать статьи по запросу и построить итоговый набор признаков."""
     from on_demand_parsing.parser import run_parser
-    from preprocessing.create_features import build_real_features
 
     query = query.strip()
     if not query:
         raise ValueError("Запрос не должен быть пустым")
 
-    run_parser(query, **({"budget": budget} if budget else {}))
-    source_path = get_parsed_corpus_path(query)
+    started = time.monotonic()
+    try:
+        run_parser(query, **({"budget": budget} if budget else {}))
+    finally:
+        logger.info("Search stage OpenAlex: %.1f s", time.monotonic() - started)
+    return build_dataset_from_corpus(query, get_parsed_corpus_path(query), budget=budget)
+
+
+def build_dataset_from_corpus(query: str, source_path: str | Path, budget=None) -> Path:
+    """Rebuild model results from an already collected OpenAlex corpus."""
+    from preprocessing.create_features import build_real_features
+
+    source_path = Path(source_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(source_path)
 
     output_path = get_built_dataset_path(query)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,9 +344,17 @@ def build_dataset_for_query(query: str, budget=None) -> Path:
         ]).assign(search_partial=bool(budget and budget.truncated)).to_parquet(output_path, index=False)
         return output_path
 
-    build_real_features(str(source_path), str(output_path))
-    return add_model_targets(output_path, source_path, query=query,
-                             **({"budget": budget} if budget else {}))
+    started = time.monotonic()
+    try:
+        build_real_features(str(source_path), str(output_path))
+    finally:
+        logger.info("Search stage features: %.1f s", time.monotonic() - started)
+    started = time.monotonic()
+    try:
+        return add_model_targets(output_path, source_path, query=query,
+                                 **({"budget": budget} if budget else {}))
+    finally:
+        logger.info("Search stage model and relevance: %.1f s", time.monotonic() - started)
 
 
 if __name__ == "__main__":

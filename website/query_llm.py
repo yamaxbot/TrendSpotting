@@ -16,6 +16,7 @@ ARTICLE_ANALYSIS_VERSION = "grounded-v2"
 ABSTRACT_MAX_CHARACTERS = 5000
 MAX_LLM_ATTEMPTS = 2
 MAX_ARTICLE_ANALYSIS_ATTEMPTS = 3
+BATCH_ARTICLE_COUNT = 3
 RELATED_ABSTRACT_MAX_CHARACTERS = 1600
 logger = logging.getLogger(__name__)
 SCIENTIFIC_UNITS = re.compile(
@@ -42,6 +43,17 @@ case_result: конкретный результат этой работы, до
 данные этого не показывают. Используй только факты из аннотации и переданных факторов,
 без прогнозов и домыслов. Если поле не подтверждено, запиши строку "None".
 Никакого текста вне JSON."""
+
+BATCH_ARTICLE_PROMPT = """Обработай каждую статью отдельно. Верни только JSON:
+{"articles":[{"id":"исходный id","title":"точный перевод названия на русский","summary":"...","problem":"...","advantage":"...","case_result":"...","weak_signal":"..."}]}.
+Для каждого входного id верни ровно один объект. title переведи полностью, без сокращений, пояснений и добавлений; сохрани имена, числа и сокращения. Остальные поля основывай только на аннотации данной статьи, не смешивай сведения разных статей. summary — суть до 40 слов; problem — задача до 25; advantage — метод или заявленное преимущество до 25; case_result — конкретный результат до 30. weak_signal — конкретный метод или результат и осторожное объяснение его возможной значимости, до 75 слов. Не выдумывай результаты, рост направления или внедрение. Если факт для поля не указан, напиши строку "None". Не добавляй текст вне JSON."""
+
+CASE_RESULT_PROMPT = """Из аннотации извлеки один конкретный результат исследования на русском, до 30 слов. Сохрани числа и единицы измерения без изменений. Не добавляй фактов. Если результата нет, верни "None". Ответ только JSON: {"case_result":"..."}."""
+RESULT_EVIDENCE = re.compile(
+    r"\b(?:demonstrat\w*|show\w*|observ\w*|achiev\w*|measur\w*|"
+    r"result\w*|reduc\w*|improv\w*|показ\w*|получ\w*|измер\w*)\b",
+    re.I,
+)
 
 WEAK_SIGNAL_PROMPT = """Объясни по-русски, почему публикация может быть слабым
 сигналом нового направления: 2–3 коротких предложения, до 70 слов. Опирайся только
@@ -83,7 +95,7 @@ FEATURE_LABELS = {
 }
 
 
-def _query_llm(system_prompt, abstract_text, max_tokens=None, temperature=0.2):
+def _query_llm(system_prompt, abstract_text, max_tokens=None, temperature=0.2, timeout=30):
     if not isinstance(abstract_text, str) or not abstract_text.strip():
         return "None"
     abstract_text = abstract_text.strip()
@@ -102,7 +114,7 @@ def _query_llm(system_prompt, abstract_text, max_tokens=None, temperature=0.2):
         API_URL,
         headers={"Authorization": f"Bearer {API_KEY}"},
         json=payload,
-        timeout=30,
+        timeout=timeout,
     )
     response.raise_for_status()
     data = response.json()
@@ -287,16 +299,124 @@ def _parse_article_analysis(content):
         raise ValueError("Article analysis is not an object")
     result = {}
     for key in ("summary", "problem", "advantage", "case_result", "weak_signal"):
+        if key not in values:
+            raise ValueError(f"Missing article analysis field: {key}")
         value = values.get(key)
-        if not isinstance(value, str) or len(value) > 450:
-            raise ValueError(f"Invalid article analysis field: {key}")
-        value = value.strip()
-        if not value or (value.casefold() != "none" and has_corrupt_text(value)):
-            raise ValueError(f"Invalid article analysis field: {key}")
-        if key == "weak_signal" and value.casefold() != "none" and not is_valid_weak_signal(value):
-            raise ValueError("Invalid article weak signal")
+        valid = isinstance(value, str) and len(value) <= 450
+        if valid:
+            value = value.strip()
+            valid = bool(value) and (value.casefold() == "none" or not has_corrupt_text(value))
+            if key == "weak_signal" and valid and value.casefold() != "none":
+                valid = is_valid_weak_signal(value)
+        if not valid:
+            if key == "summary":
+                raise ValueError("Invalid article analysis field: summary")
+            value = "None"
         result[key] = value
     return result
+
+
+def analyze_articles_batch(articles, *, timeout=60):
+    """Generate independent card texts in one request, keyed by OpenAlex ID."""
+    if not 2 <= len(articles) <= BATCH_ARTICLE_COUNT:
+        raise ValueError("Invalid article batch size")
+
+    source_by_id = {}
+    payload = []
+    for article in articles:
+        doc_id = article.get("id")
+        title = article.get("title")
+        abstract = article.get("abstract")
+        if (
+            not isinstance(doc_id, str) or not doc_id
+            or doc_id in source_by_id
+            or not isinstance(title, str) or not title.strip()
+            or not isinstance(abstract, str) or not abstract.strip()
+        ):
+            raise ValueError("Invalid article batch input")
+        source_by_id[doc_id] = (title, abstract)
+        shap_values = article.get("shap_values")
+        if isinstance(shap_values, str):
+            try:
+                shap_values = json.loads(shap_values)
+            except json.JSONDecodeError:
+                shap_values = None
+        factors = _positive_factors(shap_values, limit=3) if isinstance(shap_values, dict) else []
+        payload.append({
+            "id": doc_id,
+            "title": title.strip(),
+            "abstract": _compact_abstract(abstract),
+            "positive_factors": [factor["фактор"] for factor in factors],
+        })
+
+    response = _query_llm(
+        BATCH_ARTICLE_PROMPT,
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        max_tokens=2100,
+        temperature=0.0,
+        timeout=timeout,
+    ).strip()
+    if response.startswith("```"):
+        response = re.sub(r"^```(?:json)?\s*|\s*```$", "", response, flags=re.I)
+    decoded = json.loads(response)
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("articles"), list):
+        raise ValueError("Article batch response is not an object with articles")
+
+    results = {}
+    for item in decoded["articles"]:
+        if not isinstance(item, dict):
+            continue
+        doc_id = item.get("id")
+        if not isinstance(doc_id, str) or doc_id not in source_by_id or doc_id in results:
+            continue
+        source_title, abstract = source_by_id[doc_id]
+        translated = _clean_title(item.get("title")) if isinstance(item.get("title"), str) else None
+        if not is_valid_title(translated, source_title):
+            translated = None
+        try:
+            analysis = _parse_article_analysis(json.dumps(item, ensure_ascii=False))
+            if not is_valid_description(analysis["summary"], abstract):
+                analysis = None
+        except (ValueError, TypeError):
+            analysis = None
+        results[doc_id] = {"title": translated, "analysis": analysis}
+    return results
+
+
+def recover_case_result(abstract_text, *, timeout=30):
+    """Retry only a missing case when the abstract describes a measured result."""
+    if (
+        not isinstance(abstract_text, str)
+        or len(abstract_text.strip()) < 200
+        or not RESULT_EVIDENCE.search(abstract_text)
+    ):
+        return "None"
+    source_numbers = set(re.findall(r"\d+(?:\.\d+)?", abstract_text.replace(",", ".")))
+    content = _compact_abstract(abstract_text)
+    for attempt in range(2):
+        try:
+            response = _query_llm(
+                CASE_RESULT_PROMPT, content,
+                max_tokens=150, temperature=0.0, timeout=timeout,
+            ).strip()
+            if response.startswith("```"):
+                response = re.sub(r"^```(?:json)?\s*|\s*```$", "", response, flags=re.I)
+            data = json.loads(response)
+            value = data.get("case_result") if isinstance(data, dict) else None
+            if not isinstance(value, str):
+                raise ValueError("Invalid case result response")
+            value = value.strip()
+            if value.casefold() == "none":
+                return "None"
+            if not value or len(value) > 450 or has_corrupt_text(value):
+                raise ValueError("Invalid case result text")
+            result_numbers = set(re.findall(r"\d+(?:\.\d+)?", value.replace(",", ".")))
+            if not result_numbers <= source_numbers:
+                raise ValueError("Case result contains unsupported numbers")
+            return value
+        except (ValueError, RuntimeError, requests.RequestException) as exc:
+            logger.warning("Case result attempt %s/2 failed: %s", attempt + 1, type(exc).__name__)
+    return "None"
 
 
 def analyze_abstract(abstract_text, shap_values=None):

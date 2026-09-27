@@ -1,5 +1,5 @@
 {
-  "rows": 967383,
+  "rows": 957909,
   "expected_rows": null,
   "by_year": {
     "2017": 100000,
@@ -10,29 +10,29 @@
     "2022": 100000,
     "2023": 100000,
     "2024": 100000,
-    "2025": 96786,
-    "2026": 70597
+    "2025": 100000,
+    "2026": 57909
   },
   "by_domain": {
-    "https://openalex.org/domains/1": 141875,
-    "https://openalex.org/domains/3": 389928,
-    "https://openalex.org/domains/2": 222618,
-    "https://openalex.org/domains/4": 212962
+    "https://openalex.org/domains/1": 141882,
+    "https://openalex.org/domains/2": 223384,
+    "https://openalex.org/domains/3": 382009,
+    "https://openalex.org/domains/4": 210634
   },
   "engineering_by_year": {
-    "2017": 15475,
-    "2018": 15643,
-    "2019": 15286,
-    "2020": 13981,
-    "2021": 13580,
-    "2022": 13584,
+    "2017": 15476,
+    "2018": 15645,
+    "2019": 15287,
+    "2020": 13984,
+    "2021": 13589,
+    "2022": 13593,
     "2023": 14258,
     "2024": 15750,
-    "2025": 16209,
-    "2026": 13527
+    "2025": 16208,
+    "2026": 13088
   },
   "targets": {
-    "None": 967383
+    "None": 957909
   },
   "critical_nulls": {},
   "duplicate_doc_ids": 0,

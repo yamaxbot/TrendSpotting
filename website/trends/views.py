@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
 import requests
@@ -125,12 +126,15 @@ def _load_trends(
 
     if generate_llm_texts:
         from website.query_llm import (
+            BATCH_ARTICLE_COUNT,
             analyze_abstract,
+            analyze_articles_batch,
             fallback_weak_signal,
             is_generic_weak_signal,
             is_valid_description,
             is_valid_title,
             is_valid_weak_signal,
+            recover_case_result,
             translate_article_title,
         )
 
@@ -151,42 +155,105 @@ def _load_trends(
             predictions.to_parquet(temporary_path, index=False)
             temporary_path.replace(dataset_path)
 
-        completed_ids = []
-        stopped_early = False
-        for row_index, row in rows.iterrows():
-            if budget and budget.expired() and completed_ids:
-                budget.stop()
-                stopped_early = True
-                break
-            original_title = row.get("title")
-            abstract_text = row.get("abstract_text")
-            title = row.get("llm_title")
-            description = row.get("llm_description")
-            signal = row.get("llm_weak_signal")
-            if not is_valid_title(title, original_title):
-                try:
-                    title = translate_article_title(original_title, abstract_text)
-                except handled_errors:
-                    title = original_title if isinstance(original_title, str) else "None"
-
-            needs_analysis = (
-                not is_valid_description(description, abstract_text)
-                or not is_valid_weak_signal(signal)
-                or is_generic_weak_signal(signal)
+        def needs_analysis(row):
+            return (
+                not is_valid_description(row.get("llm_description"), row.get("abstract_text"))
+                or not is_valid_weak_signal(row.get("llm_weak_signal"))
+                or is_generic_weak_signal(row.get("llm_weak_signal"))
                 or any(
                     not isinstance(row.get(field), str)
                     for field in ("llm_problem", "llm_advantage", "llm_case_result")
                 )
             )
-            if needs_analysis:
+
+        def request_batch(articles):
+            for attempt in range(2):
+                if attempt and budget and budget.expired():
+                    break
                 try:
-                    analysis = analyze_abstract(abstract_text, row.get("shap_values"))
-                except handled_errors:
-                    analysis = dict.fromkeys(
-                        ("summary", "problem", "advantage", "case_result", "weak_signal"),
-                        "None",
+                    return analyze_articles_batch(
+                        articles,
+                        timeout=budget.request_timeout(60) if budget else 60,
                     )
-                    logger.exception("Article analysis request failed for doc_id=%s", row.get("doc_id"))
+                except handled_errors as exc:
+                    logger.warning(
+                        "Batch article analysis attempt %s/2 failed: %s",
+                        attempt + 1, type(exc).__name__,
+                    )
+            return {}
+
+        completed_ids = []
+        stopped_early = False
+        batch_results = {}
+        for position, (row_index, row) in enumerate(rows.iterrows()):
+            if budget and budget.expired() and completed_ids:
+                budget.stop()
+                stopped_early = True
+                break
+            if position % (2 * BATCH_ARTICLE_COUNT) == 0:
+                batch_results = {}
+                groups = []
+                for start in range(position, position + 2 * BATCH_ARTICLE_COUNT, BATCH_ARTICLE_COUNT):
+                    batch_articles = []
+                    for _, candidate in rows.iloc[start:start + BATCH_ARTICLE_COUNT].iterrows():
+                        if (
+                            not is_valid_title(candidate.get("llm_title"), candidate.get("title"))
+                            or needs_analysis(candidate)
+                        ) and (
+                            isinstance(candidate.get("title"), str)
+                            and candidate["title"].strip()
+                            and isinstance(candidate.get("abstract_text"), str)
+                            and candidate["abstract_text"].strip()
+                        ):
+                            batch_articles.append({
+                                "id": str(candidate["doc_id"]),
+                                "title": candidate.get("title"),
+                                "abstract": candidate["abstract_text"],
+                                "shap_values": candidate.get("shap_values"),
+                            })
+                    if len(batch_articles) >= 2:
+                        groups.append(batch_articles)
+                if groups and not (budget and budget.expired()):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        futures = [
+                            executor.submit(
+                                request_batch, articles,
+                            )
+                            for articles in groups
+                        ]
+                        for future in futures:
+                            try:
+                                batch_results.update(future.result())
+                            except handled_errors as exc:
+                                logger.warning(
+                                    "Batch article analysis failed; using individual requests: %s",
+                                    type(exc).__name__,
+                                )
+            original_title = row.get("title")
+            abstract_text = row.get("abstract_text")
+            title = row.get("llm_title")
+            description = row.get("llm_description")
+            signal = row.get("llm_weak_signal")
+            batch_result = batch_results.get(str(row["doc_id"]), {})
+            if not is_valid_title(title, original_title):
+                title = batch_result.get("title")
+                if not is_valid_title(title, original_title):
+                    try:
+                        title = translate_article_title(original_title, abstract_text)
+                    except handled_errors:
+                        title = original_title if isinstance(original_title, str) else "None"
+
+            if needs_analysis(row):
+                analysis = batch_result.get("analysis")
+                if analysis is None:
+                    try:
+                        analysis = analyze_abstract(abstract_text, row.get("shap_values"))
+                    except handled_errors:
+                        analysis = dict.fromkeys(
+                            ("summary", "problem", "advantage", "case_result", "weak_signal"),
+                            "None",
+                        )
+                        logger.exception("Article analysis request failed for doc_id=%s", row.get("doc_id"))
                 analysis_complete = is_valid_description(analysis.get("summary"), abstract_text)
                 if analysis_complete:
                     description = analysis["summary"]
@@ -204,6 +271,18 @@ def _load_trends(
                     "advantage": row.get("llm_advantage"),
                     "case_result": row.get("llm_case_result"),
                 }
+
+            if analysis_complete and analysis.get("case_result") == "None" and not (budget and budget.expired()):
+                try:
+                    analysis["case_result"] = recover_case_result(
+                        abstract_text,
+                        timeout=budget.request_timeout(30) if budget else 30,
+                    )
+                except handled_errors as exc:
+                    logger.warning(
+                        "Case result recovery failed for doc_id=%s: %s",
+                        row.get("doc_id"), type(exc).__name__,
+                    )
 
             if not is_valid_weak_signal(signal):
                 signal = fallback_weak_signal(
