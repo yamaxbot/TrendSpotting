@@ -10,7 +10,7 @@ services:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost,testserver}
       OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
-      KIE_API_KEY: ${KIE_API_KEY:-}
+      VSELLM_API_KEY: ${VSELLM_API_KEY:-}
     volumes:
       - site_data:/app/website/data
       - parser_logs:/app/website/logics

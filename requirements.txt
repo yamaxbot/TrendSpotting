@@ -1,4 +1,5 @@
 requests>=2.32,<3
+openai>=3,<4
 python-dotenv>=1,<2
 pyarrow>=19,<24
 openpyxl>=3.1,<4

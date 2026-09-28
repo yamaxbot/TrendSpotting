@@ -20,7 +20,7 @@ MODEL_PATH = (
 )
 MODEL_METRICS_PATH = MODEL_PATH.with_name("metrics.json")
 MODEL_VERSION = "catboost-random-split-2026-09-v1"
-RANKING_VERSION = "intent-relevance-v4"
+RANKING_VERSION = "intent-relevance-qwen37-v1"
 logger = logging.getLogger(__name__)
 
 if str(PROJECT_ROOT) not in sys.path:

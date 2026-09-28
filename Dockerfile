@@ -15,7 +15,12 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY vsellm_chat.py ./
+COPY on_demand_parsing/ ./on_demand_parsing/
+COPY preprocessing/create_features.py ./preprocessing/create_features.py
+COPY website/ ./website/
+COPY outputs/catboost_splits/random/catboost_model.cbm ./outputs/catboost_splits/random/catboost_model.cbm
+COPY outputs/catboost_splits/random/metrics.json ./outputs/catboost_splits/random/metrics.json
 
 RUN python website/manage.py collectstatic --noinput \
     && groupadd --system app \

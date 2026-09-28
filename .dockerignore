@@ -2,8 +2,14 @@
 .env
 .venv
 .vscode
+education
+education2
+download_dataset
 **/__pycache__
 **/*.py[cod]
+**/*.ipynb
+**/*.md
+**/*.MD
 **/*.parquet
 **/*.sqlite*
 **/*.log
@@ -17,3 +23,5 @@ logics
 on_demand_parsing/data
 test_dataset
 website/data
+on_demand_parsing/test_*.py
+website/trends/tests.py

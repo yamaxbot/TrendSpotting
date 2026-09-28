@@ -1,20 +1,18 @@
 import json
 import logging
-import os
 import re
+import time
 
-import requests
-from dotenv import load_dotenv
+from openai import OpenAIError
+
+from vsellm_chat import chat_completion
 
 
-load_dotenv()
-
-API_URL = "https://api.kie.ai/gpt-5-2/v1/chat/completions"
-API_KEY = os.getenv("KIE_API_KEY")
-TITLE_FORMAT_VERSION = "exact-v2"
-ARTICLE_ANALYSIS_VERSION = "grounded-v2"
+TITLE_FORMAT_VERSION = "qwen37-exact-v2"
+ARTICLE_ANALYSIS_VERSION = "qwen37-grounded-v1"
 ABSTRACT_MAX_CHARACTERS = 5000
 MAX_LLM_ATTEMPTS = 2
+MAX_TITLE_TRANSLATION_ATTEMPTS = 3
 MAX_ARTICLE_ANALYSIS_ATTEMPTS = 3
 BATCH_ARTICLE_COUNT = 3
 RELATED_ABSTRACT_MAX_CHARACTERS = 1600
@@ -99,31 +97,14 @@ def _query_llm(system_prompt, abstract_text, max_tokens=None, temperature=0.2, t
     if not isinstance(abstract_text, str) or not abstract_text.strip():
         return "None"
     abstract_text = abstract_text.strip()
-    if not API_KEY:
-        raise RuntimeError("Переменная окружения KIE_API_KEY не задана")
-    payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": abstract_text},
-        ],
-        "temperature": temperature,
-    }
-    if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
-    response = requests.post(
-        API_URL,
-        headers={"Authorization": f"Bearer {API_KEY}"},
-        json=payload,
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    data = response.json()
     try:
-        result = data["choices"][0]["message"]["content"]
+        result = chat_completion(
+            system_prompt, abstract_text, max_tokens=max_tokens,
+            temperature=temperature, timeout=timeout,
+        )
         if not isinstance(result, str):
             raise ValueError("LLM returned non-text content")
-        result = result.strip()
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         raise RuntimeError("LLM returned an invalid response") from exc
     return result or "None"
 
@@ -159,6 +140,10 @@ def is_valid_title(value, source_title):
     if _is_none(value) or has_corrupt_text(value):
         return False
     if re.search(r"[A-Za-z]", source_title) and not re.search(r"[А-Яа-яЁё]", value):
+        return False
+    latin_words = re.findall(r"[A-Za-z]{2,}", value)
+    cyrillic_words = re.findall(r"[А-Яа-яЁё]{2,}", value)
+    if len(latin_words) >= 4 and len(latin_words) > len(cyrillic_words):
         return False
     return not _starts_with_lowercase_cyrillic(value)
 
@@ -414,7 +399,7 @@ def recover_case_result(abstract_text, *, timeout=30):
             if not result_numbers <= source_numbers:
                 raise ValueError("Case result contains unsupported numbers")
             return value
-        except (ValueError, RuntimeError, requests.RequestException) as exc:
+        except (ValueError, RuntimeError, OpenAIError) as exc:
             logger.warning("Case result attempt %s/2 failed: %s", attempt + 1, type(exc).__name__)
     return "None"
 
@@ -445,7 +430,7 @@ def analyze_abstract(abstract_text, shap_values=None):
             if not is_valid_description(analysis["summary"], abstract_text):
                 raise ValueError("Article analysis has no valid summary")
             return analysis
-        except (ValueError, RuntimeError, requests.RequestException) as exc:
+        except (ValueError, RuntimeError, OpenAIError) as exc:
             logger.warning(
                 "Article analysis attempt %s/%s failed: %s: %s",
                 attempt, MAX_ARTICLE_ANALYSIS_ATTEMPTS, type(exc).__name__, exc,
@@ -507,29 +492,34 @@ def summarize_related_signal(anchor, related_articles):
     return signal.strip()
 
 
-def translate_article_title(title, abstract_text=""):
+def translate_article_title(title, abstract_text="", *, timeout=60):
     if not isinstance(title, str) or not title.strip():
         return "None"
     source_title = title.strip()
-    for attempt in range(1, MAX_LLM_ATTEMPTS + 1):
+    deadline = time.monotonic() + timeout
+    for attempt in range(1, MAX_TITLE_TRANSLATION_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             result = _clean_title(
                 _query_llm(
                     TITLE_TRANSLATION_PROMPT,
                     source_title,
-                    max_tokens=160,
+                    max_tokens=384,
                     temperature=0.0,
+                    timeout=remaining,
                 )
             )
-        except (RuntimeError, ValueError, requests.RequestException) as exc:
+        except (RuntimeError, ValueError, OpenAIError) as exc:
             logger.warning(
                 "Title translation attempt %s/%s failed: %s",
-                attempt, MAX_LLM_ATTEMPTS, type(exc).__name__,
+                attempt, MAX_TITLE_TRANSLATION_ATTEMPTS, type(exc).__name__,
             )
             continue
         if is_valid_title(result, source_title):
             return result
-    return source_title
+    return source_title if is_valid_title(source_title, source_title) else "None"
 
 
 def explain_weak_signal(abstract_text, shap_values):

@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from on_demand_parsing import main_collection, openalex_client, parser, query_normalizer, query_recovery
@@ -6,28 +7,48 @@ from on_demand_parsing.relevance_filter import filter_relevant
 
 
 class CollectionOptimizationTests(unittest.TestCase):
+    def test_sdk_chat_uses_qwen_and_validates_content(self):
+        import vsellm_chat
+
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="OK"),
+        )])
+        with patch.object(vsellm_chat, "get_client") as client:
+            create = client.return_value.with_options.return_value.chat.completions.create
+            create.return_value = response
+            self.assertEqual(
+                vsellm_chat.chat_completion(
+                    "system", "user", max_tokens=256, temperature=0.0, timeout=60,
+                ),
+                "OK",
+            )
+            self.assertEqual(create.call_args.kwargs["model"], "qwen/qwen3.7-flash")
+            self.assertEqual(create.call_args.kwargs["max_tokens"], 256)
+            self.assertEqual(client.return_value.with_options.call_args.kwargs["timeout"], 60)
+            response.choices[0].message.content = None
+            with self.assertRaises(ValueError):
+                vsellm_chat.chat_completion("system", "user")
+
+    def test_llm_entry_points_use_qwen(self):
+        from vsellm_chat import API_BASE_URL, MODEL_ID, chat_completion
+        from website import query_llm
+
+        self.assertEqual(API_BASE_URL, "https://api.vsellm.ru/v1")
+        self.assertEqual(MODEL_ID, "qwen/qwen3.7-flash")
+        self.assertIs(query_normalizer.chat_completion, chat_completion)
+        self.assertIs(query_llm.chat_completion, chat_completion)
+
     def test_query_normalization_retries_invalid_provider_response(self):
-        class Response:
-            def __init__(self, payload):
-                self.payload = payload
-
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                return self.payload
-
-        responses = [
-            Response({"error": "temporary"}),
-            Response({"choices": [{"message": {"content": "solid-state batteries"}}]}),
-        ]
-        with patch.object(query_normalizer, "API_KEY", "test"), \
-             patch.object(query_normalizer.requests, "post", side_effect=responses) as post:
+        responses = ["", "solid-state batteries"]
+        with patch.object(query_normalizer, "chat_completion", side_effect=responses) as chat:
             self.assertEqual(
                 query_normalizer.normalize_query("твердотельные аккумуляторы"),
                 "solid-state batteries",
             )
-        self.assertEqual(post.call_count, 2)
+        self.assertEqual(chat.call_count, 2)
+        from vsellm_chat import CHAT_TIMEOUT_SECONDS
+        self.assertGreater(chat.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(chat.call_args.kwargs["timeout"], CHAT_TIMEOUT_SECONDS)
 
     def test_recovery_keeps_only_original_query_matches(self):
         def work(identifier, title):

@@ -4,16 +4,18 @@ import hashlib
 import json
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
-import requests
+from openai import OpenAIError
 
+from vsellm_chat import CHAT_TIMEOUT_SECONDS
 from website.query_llm import _query_llm
 
 
-GATE_VERSION = "intent-v2"
+GATE_VERSION = "qwen37-intent-v1"
 BATCH_SIZE = 20
 MAX_CANDIDATES = 240
 MAX_ABSTRACT_CHARACTERS = 900
@@ -100,10 +102,22 @@ def _classify_batch(query: str, works: list[dict]) -> set[str]:
         {"request": query, "works": works}, ensure_ascii=False,
         separators=(",", ":"),
     )
+    deadline = time.monotonic() + CHAT_TIMEOUT_SECONDS
     for attempt in range(1, MAX_RELEVANCE_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
-            answer = _query_llm(RELEVANCE_PROMPT, content, max_tokens=1200, temperature=0.0)
-            data = json.loads(answer)
+            answer = _query_llm(
+                RELEVANCE_PROMPT, content, max_tokens=1200,
+                temperature=0.0, timeout=remaining,
+            )
+            response_content = answer.strip()
+            if response_content.startswith("```"):
+                response_content = re.sub(
+                    r"^```(?:json)?\s*|\s*```$", "", response_content, flags=re.I,
+                )
+            data = json.loads(response_content)
             ids = data["relevant_ids"]
             available_ids = {work["id"] for work in works}
             if not isinstance(ids, list) or any(
@@ -111,7 +125,7 @@ def _classify_batch(query: str, works: list[dict]) -> set[str]:
             ):
                 raise ValueError("invalid relevance IDs")
             return set(ids)
-        except (RuntimeError, ValueError, TypeError, KeyError, requests.RequestException) as exc:
+        except (RuntimeError, ValueError, TypeError, KeyError, OpenAIError) as exc:
             logger.warning(
                 "Relevance check attempt %s/%s failed: %s",
                 attempt, MAX_RELEVANCE_ATTEMPTS, type(exc).__name__,

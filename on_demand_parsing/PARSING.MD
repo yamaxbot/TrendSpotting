@@ -6,7 +6,7 @@
 
 | Файлы | Роль |
 |---|---|
-| `request_validation.py`, `query_normalizer.py` | Проверка запроса и короткая англоязычная формулировка для поиска |
+| `request_validation.py`, `query_normalizer.py` | Проверка подключения к VseLLM и преобразование запроса в короткую англоязычную формулировку через `qwen/qwen3.7-flash` |
 | `openalex_client.py` | Запросы к OpenAlex с ключом API |
 | `topic_discovery.py`, `topic_scoring.py` | Получение, оценка и выбор тем из стартовых работ |
 | `main_collection.py`, `query_recovery.py` | Расширенный сбор по темам и восстановление результатов для узких запросов |

@@ -9,6 +9,8 @@ from django.test import SimpleTestCase
 
 from trends import charts, evidence, jobs, statistics, views
 from on_demand_parsing.time_budget import SearchBudget
+from website.main import RANKING_VERSION
+from website.query_llm import ARTICLE_ANALYSIS_VERSION, TITLE_FORMAT_VERSION
 
 
 class WebsiteTests(SimpleTestCase):
@@ -34,10 +36,10 @@ class WebsiteTests(SimpleTestCase):
                        'diversity_max_similarity': 0.0,
                        'model_threshold': 0.2436524675,
                        'model_version': 'catboost-random-split-2026-09-v1',
-                       'ranking_version': 'intent-relevance-v4',
-                       'llm_title': 'Перевод', 'llm_title_version': 'exact-v2',
+                       'ranking_version': RANKING_VERSION,
+                       'llm_title': 'Перевод', 'llm_title_version': TITLE_FORMAT_VERSION,
                        'llm_description': 'Summary',
-                        'llm_analysis_version': 'grounded-v2',
+                        'llm_analysis_version': ARTICLE_ANALYSIS_VERSION,
                        'llm_problem': 'Обнаружение глюкозы',
                        'llm_advantage': 'Более точный метод',
                        'llm_case_result': 'Показана работа сенсора',
@@ -198,6 +200,7 @@ class WebsiteTests(SimpleTestCase):
         corpus = pd.read_parquet(self.corpus)
         corpus.loc[0, 'authorships_json'] = '[]'
         corpus.to_parquet(self.corpus, index=False)
+        self.dataset.touch()
         with patch.object(evidence, 'load_cached', return_value=None), \
              patch.object(evidence, 'start', return_value='queued'):
             response = self.client.get('/trend/result-1/', {'q': 'test'})
@@ -245,6 +248,44 @@ class WebsiteTests(SimpleTestCase):
         data.to_parquet(self.dataset)
         self.assertFalse(views._dataset_is_ready(self.dataset, self.corpus))
 
+    def test_detail_redirects_when_saved_case_title_is_untranslated(self):
+        data = pd.read_parquet(self.dataset)
+        data.loc[0, 'llm_title'] = 'Original'
+        data.to_parquet(self.dataset)
+
+        response = self.client.get('/trend/result-1/', {'q': 'test'})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response['Location'], '/?q=test')
+
+    def test_english_case_title_is_retranslated_before_saving(self):
+        from website import query_llm
+
+        source = (
+            '3D-Printed Electrohydrodynamic Pump and Development of '
+            'Anti-Swelling Organohydrogel for Soft Robotics'
+        )
+        self.assertFalse(query_llm.is_valid_title(source, source))
+        self.assertFalse(query_llm.is_valid_title(
+            '3D-Printed Electrohydrodynamic Pump and Development для мягкой робототехники',
+            source,
+        ))
+        corpus = pd.read_parquet(self.corpus)
+        corpus.loc[0, 'title'] = source
+        corpus.to_parquet(self.corpus)
+        predictions = pd.read_parquet(self.dataset)
+        predictions.loc[0, 'llm_title'] = source
+        predictions.to_parquet(self.dataset)
+        translated = '3D-напечатанный электродинамический насос и разработка ненабухающего органогидрогеля для мягкой робототехники'
+
+        with patch.object(query_llm, 'translate_article_title', return_value=translated) as translate:
+            trends = views._load_trends(self.dataset, self.corpus, generate_llm_texts=True)
+
+        self.assertEqual(trends[0]['name'], translated)
+        self.assertEqual(pd.read_parquet(self.dataset).loc[0, 'llm_title'], translated)
+        self.assertTrue(views._dataset_is_ready(self.dataset, self.corpus))
+        translate.assert_called_once()
+
     def test_status_failure_and_complete(self):
         with patch.object(jobs, 'status', return_value='failed'):
             self.assertEqual(self.client.get('/search/status/', {'q': 'test'}).json()['status'], 'failed')
@@ -267,8 +308,7 @@ class WebsiteTests(SimpleTestCase):
 
     def test_invalid_llm_content_is_reported(self):
         from website import query_llm
-        with patch.object(query_llm, 'API_KEY', 'test'), patch.object(query_llm.requests, 'post') as post:
-            post.return_value.json.return_value = {'choices': [{'message': {'content': None}}]}
+        with patch.object(query_llm, 'chat_completion', return_value=None):
             with self.assertRaises(RuntimeError):
                 query_llm.summarize_abstract('text')
 
@@ -458,7 +498,7 @@ class WebsiteTests(SimpleTestCase):
         })
         with patch.object(
             query_llm, '_query_llm',
-            side_effect=[empty, query_llm.requests.Timeout(), valid],
+            side_effect=[empty, RuntimeError('timeout'), valid],
         ) as request:
             result = query_llm.analyze_abstract('A sensor abstract.')
         self.assertEqual(request.call_count, 3)
@@ -753,12 +793,12 @@ class WebsiteTests(SimpleTestCase):
         with patch.object(
             query_llm, '_query_llm', return_value='обрезанный перевод'
         ) as query:
-            self.assertEqual(query_llm.translate_article_title(source), source)
-            self.assertEqual(query.call_count, 2)
+            self.assertEqual(query_llm.translate_article_title(source), 'None')
+            self.assertEqual(query.call_count, 3)
 
         with patch.object(
             query_llm, '_query_llm',
-            side_effect=[query_llm.requests.Timeout(), valid],
+            side_effect=[RuntimeError('timeout'), valid],
         ) as query:
             self.assertEqual(query_llm.translate_article_title(source), valid)
             self.assertEqual(query.call_count, 2)
@@ -960,6 +1000,20 @@ class RelevanceGateTests(SimpleTestCase):
         ]) as llm:
             self.assertEqual(relevance_gate._classify_batch('Защита ИИ', works), {'W2'})
         self.assertEqual(llm.call_count, 2)
+
+        with patch.object(relevance_gate, '_query_llm',
+                          return_value='```json\n{"relevant_ids":["W2"]}\n```') as llm:
+            self.assertEqual(relevance_gate._classify_batch('Защита ИИ', works), {'W2'})
+        self.assertEqual(llm.call_count, 1)
+        from vsellm_chat import CHAT_TIMEOUT_SECONDS
+        self.assertGreater(llm.call_args.kwargs['timeout'], 0)
+        self.assertLessEqual(llm.call_args.kwargs['timeout'], CHAT_TIMEOUT_SECONDS)
+
+        with patch.object(relevance_gate, '_query_llm', side_effect=[
+            'not JSON', '```json\n{"relevant_ids":["W2"]}\n```',
+        ]) as llm:
+            self.assertEqual(relevance_gate._classify_batch('Защита ИИ', works), {'W2'})
+        self.assertEqual(llm.call_args_list[0].args[1], llm.call_args_list[1].args[1])
 
     def test_named_ion_chemistry_must_be_central_to_article(self):
         from website import relevance_gate

@@ -1,11 +1,11 @@
 from pathlib import Path
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
-import requests
+from openai import OpenAIError
 from django.http import Http404, JsonResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET
 from . import charts, evidence, jobs, organizations
 from website.query_llm import ARTICLE_ANALYSIS_VERSION, TITLE_FORMAT_VERSION, clean_weak_signal
@@ -147,7 +147,7 @@ def _load_trends(
 
         handled_errors = (
             KeyError, IndexError, TypeError, RuntimeError, ValueError,
-            AttributeError, requests.RequestException,
+            AttributeError, OpenAIError,
         )
 
         def checkpoint():
@@ -239,9 +239,12 @@ def _load_trends(
                 title = batch_result.get("title")
                 if not is_valid_title(title, original_title):
                     try:
-                        title = translate_article_title(original_title, abstract_text)
+                        title = translate_article_title(
+                            original_title, abstract_text,
+                            timeout=budget.request_timeout(60) if budget else 60,
+                        )
                     except handled_errors:
-                        title = original_title if isinstance(original_title, str) else "None"
+                        title = "None"
 
             if needs_analysis(row):
                 analysis = batch_result.get("analysis")
@@ -347,11 +350,7 @@ def _load_trends(
         doc_id = display_value(row.get("doc_id"))
         original_title = display_value(row.get("title"))
         translated_title = display_value(row.get("llm_title"))
-        title = (
-            translated_title
-            if translated_title != "None"
-            else original_title
-        )
+        title = translated_title if translated_title != "None" else "Название исследования недоступно"
         doi = display_value(row.get("doi"))
         source_id = display_value(row.get("source_id"))
         publication_year = display_value(row.get("pub_year"))
@@ -494,7 +493,10 @@ def trend_detail(request, slug):
         from website.main import get_built_dataset_path, get_parsed_corpus_path
 
         dataset_path = get_built_dataset_path(query)
-        trends = _load_trends(dataset_path, get_parsed_corpus_path(query))
+        corpus_path = get_parsed_corpus_path(query)
+        if not _dataset_is_ready(dataset_path, corpus_path):
+            return redirect(f"/?{urlencode({'q': query})}")
+        trends = _load_trends(dataset_path, corpus_path)
     except (OSError, ValueError, KeyError):
         raise Http404("Результаты запроса не найдены")
 
