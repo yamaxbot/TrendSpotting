@@ -42,9 +42,6 @@ def safe_metric(metric_fn, *args, default=np.nan):
 
 
 def split_temporal(df, X, y_target):
-    """Строгий временной split: train 2020-21 | valid 2022 | test 2023.
-    2017-2019 / 2024-2026 — только support, в обучение не входят.
-    """
     train = (df["pub_year"] >= 2020) & (df["pub_year"] <= 2021)
     valid = df["pub_year"] == 2022
     test = df["pub_year"] == 2023
@@ -83,13 +80,6 @@ def split_temporal(df, X, y_target):
 
 
 def threshold_table(y, scores, n_thresholds=1000):
-    """
-    Строит таблицу threshold -> precision/recall/F1/MCC.
-
-    В отличие от наивного варианта здесь НЕ создаётся матрица
-    [n_thresholds x n_samples], поэтому поиск порога не должен
-    внезапно съесть гигабайты RAM.
-    """
     y = np.asarray(y, dtype=np.int8)
     scores = np.asarray(scores, dtype=np.float64)
 
@@ -256,10 +246,6 @@ def evaluate(name, y, scores, threshold, out_dir):
 
 
 def prepare_features(df):
-    """
-    Формирует признаки и исключает потенциально проблемные/мусорные
-    колонки из текущего эксперимента.
-    """
     year_totals = df.groupby("pub_year")["doc_id"].transform("count")
 
     if "topic_historical_volume" in df.columns:
@@ -342,12 +328,6 @@ def prepare_features(df):
 
 
 def build_ranking_group_ids(df):
-    """Build ranking groups from the information actually present in the dataset.
-
-    The current parquet contains no topic identifier. Therefore the only
-    defensible ranking group available here is publication year. Topic-derived
-    numeric features are model inputs, not stable group identifiers.
-    """
     if "pub_year" not in df.columns:
         raise ValueError("Ranking mode requires 'pub_year'.")
 
@@ -401,7 +381,6 @@ def make_ranking_pools(
     test_df,
     cat_features,
 ):
-    """Rank papers within each publication year."""
     group_all = build_ranking_group_ids(df)
 
     group_id_train = group_all[df.index.isin(Xtr.index)]
@@ -463,7 +442,6 @@ def make_ranking_pools(
 
 
 def ranking_topk_metrics(scores, y, group_ids, top):
-    """Compute mean Precision@K and Recall@K over ranking groups."""
     scores = np.asarray(scores, dtype=np.float64)
     y = np.asarray(y, dtype=np.int8)
     groups = np.asarray(group_ids)

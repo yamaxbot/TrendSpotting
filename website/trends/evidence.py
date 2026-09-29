@@ -1,8 +1,3 @@
-"""Find closely related OpenAlex works for a result article.
-
-Counts describe the explicitly searched OpenAlex subset, not an estimate of
-every publication about a technology in the world.
-"""
 
 import datetime as dt
 import hashlib
@@ -67,7 +62,6 @@ def _search_phrase(title):
 
 
 def _focus_terms(title):
-    """Keep a title's explicit application qualifier (for example, biomedical)."""
     match = re.search(r"\b(?:with emphasis on|for|towards?|in)\s+(.+)$", title or "", re.I)
     if not match:
         return set()
@@ -118,7 +112,6 @@ def _fetch_year(phrase, topic_id, year, session):
 
 
 def build_evidence(anchor, session=None, encoder=None):
-    """Count thematic works and select source links with the stricter matcher."""
     phrase = _search_phrase(anchor.get("title"))
     if not phrase:
         raise ValueError("The article title has no searchable terms")
@@ -283,7 +276,6 @@ def load_cached(query, anchor):
 
 
 def _upgrade_cached_statistics(query, anchor):
-    """Recount an existing result without repeating strict source matching."""
     old = _read_cache(query, anchor)
     if not any(
         _cache_matches(old, anchor, version)

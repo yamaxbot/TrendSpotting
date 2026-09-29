@@ -1,4 +1,3 @@
-"""Collect a bounded OpenAlex corpus for on-demand ranking."""
 
 from concurrent.futures import ThreadPoolExecutor, wait
 

@@ -23,7 +23,6 @@ PARSING_YEARS = (2024, 2025, 2026)
 
 
 def get_parse_corpus_path(user_query: str) -> Path:
-    """Вернуть путь корпуса с безопасным именем пользовательского запроса."""
     filename = re.sub(r'[<>:"/\\|?*]+', "_", user_query.strip())
     filename = re.sub(r"\s+", "_", filename).strip("._")
     return PARSE_DATA_DIR / f"parse_corpus_{filename[:100] or 'query'}.parquet"

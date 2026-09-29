@@ -1,4 +1,3 @@
-"""One lazily loaded encoder shared by parsing and result diversification."""
 
 from functools import lru_cache
 

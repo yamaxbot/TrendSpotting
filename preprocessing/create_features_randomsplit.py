@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 
 
 def parse_json_list(value: Any) -> list:
-    """Safely parse a JSON/list-like OpenAlex field."""
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -61,7 +60,6 @@ def parse_json_list(value: Any) -> list:
 
 
 def extract_author_ids(value: Any) -> list[str]:
-    """Extract OpenAlex author IDs from authorship data."""
     value = parse_json_list(value)
 
     if not value:
@@ -86,28 +84,15 @@ def extract_author_ids(value: Any) -> list[str]:
 
 
 def parse_counts_by_year(value: Any) -> list[dict]:
-    """Parse OpenAlex counts_by_year into dictionaries."""
     value = parse_json_list(value)
     return [item for item in value if isinstance(item, dict)]
 
 
 def safe_len_json_list(value: Any) -> int:
-    """Number of items in a JSON/list-like OpenAlex field."""
     return len(parse_json_list(value))
 
 
 def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
-    """
-    Historical emergence proxy.
-
-    Every paper in the same (topic, year) receives the same label.
-
-    A paper from year Y is positive when its topic has unusually high
-    publication growth during Y+1..Y+3 relative to Y-3..Y-1,
-    with a minimum future publication volume.
-
-    Future information is used ONLY for the label.
-    """
     logger.info("Calculating historical emergence target...")
 
     topics = df["primary_topic_id"].to_numpy()
@@ -203,16 +188,6 @@ def _history_mask(
     current_year: int,
     allowed_history_indices: np.ndarray | None,
 ) -> np.ndarray:
-    """
-    Return rows that may be used as historical information for current_year.
-
-    If allowed_history_indices is None:
-        all rows with pub_year < current_year are allowed.
-
-    Otherwise:
-        only rows in allowed_history_indices with pub_year < current_year
-        are allowed.
-    """
     years = pd.to_numeric(df["pub_year"], errors="coerce").to_numpy()
 
     mask = np.isfinite(years) & (years < current_year)
@@ -229,15 +204,6 @@ def calculate_topic_dynamics(
     df: pd.DataFrame,
     allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """
-    Historical topic-level publication dynamics.
-
-    For a paper in year Y, only papers from Y-1..Y-3 that belong to
-    allowed_history_indices are used.
-
-    In random mode, pass TRAIN indices so validation/test papers never
-    contribute to feature history.
-    """
     logger.info("Calculating topic publication dynamics...")
 
     topics = df["primary_topic_id"].to_numpy()
@@ -313,11 +279,6 @@ def calculate_author_features(
     df: pd.DataFrame,
     allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """
-    Historical author-community dynamics.
-
-    Only allowed history rows are used to build author counts.
-    """
     logger.info("Calculating author dynamics...")
 
     authors_column = (
@@ -394,15 +355,6 @@ def calculate_temporal_text_features(
     text_matrix: scipy.sparse.csr_matrix,
     allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """
-    Point-in-time text geometry.
-
-    For a paper from year Y, historical centroids contain only papers
-    from years < Y and, when allowed_history_indices is provided, only
-    those rows.
-
-    This is the critical anti-leakage mechanism for random splitting.
-    """
     logger.info("Calculating temporal text geometry...")
 
     n = len(df)
@@ -605,14 +557,6 @@ def calculate_temporal_graph_features(
     df: pd.DataFrame,
     allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """
-    Historical topic-domain association features.
-
-    Current paper values are calculated BEFORE its row is added to
-    historical state.
-
-    In random mode only TRAIN rows are allowed into historical state.
-    """
     logger.info("Calculating temporal topic-domain structure...")
 
     n = len(df)
@@ -715,11 +659,6 @@ def calculate_source_features(
     df: pd.DataFrame,
     allowed_history_indices: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """
-    Historical publication-source structure.
-
-    Only permitted historical rows update source statistics.
-    """
     logger.info("Calculating historical source structure...")
 
     topics = df["primary_topic_id"].to_numpy()
@@ -803,11 +742,6 @@ def calculate_source_features(
 
 
 def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Bibliographic-support features available at publication time.
-
-    These are properties of the paper itself, not future information.
-    """
     logger.info("Calculating bibliographic features...")
 
     n = len(df)
@@ -834,16 +768,6 @@ def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
 def calculate_historical_citation_features(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Historical citation information only.
-
-    For a paper published in Y:
-        velocity = cumulative cited_by counts through Y.
-        acceleration = log2((citations in Y + 1) /
-                            (citations in Y-1 + 1)).
-
-    No Y+1 or later citation data is used.
-    """
     logger.info("Calculating historical citation features...")
 
     n = len(df)
@@ -892,17 +816,6 @@ def calculate_historical_citation_features(
 def make_splits(
     df: pd.DataFrame,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Create train/valid/test indices.
-
-    Random mode:
-        stratified random split over papers, independent of publication year.
-
-    Temporal mode:
-        train <= TEMPORAL_TRAIN_END_YEAR
-        valid = (train_end, valid_end]
-        test  > valid_end
-    """
     n = len(df)
     all_indices = np.arange(n)
 

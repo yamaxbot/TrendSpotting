@@ -1,4 +1,3 @@
-"""Stratified random sampling, with transactional per-page checkpoints."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -20,7 +19,6 @@ QUALITY = "has_abstract:true,referenced_works_count:>0"
 
 
 def allocate(total: int, weights: dict[str, int]) -> dict[str, int]:
-    """Hamilton allocation preserves the exact requested integer total."""
     denominator = sum(weights.values())
     if denominator <= 0:
         raise ValueError("Empty eligible population")

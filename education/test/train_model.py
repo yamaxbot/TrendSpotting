@@ -30,13 +30,6 @@ def safe_metric(metric_fn, *args, default=np.nan):
 
 
 def split_temporal_strict(df, X):
-    """Строгий temporal split:
-
-    Train: 2020-2021
-    Valid: 2022
-    Test:  2023
-    2017-2019 и 2024-2026 ЖЕСТКО ИГНОРИРУЮТСЯ при обучении.
-    """
     train_mask = (df["pub_year"] >= 2020) & (df["pub_year"] <= 2021)
     valid_mask = df["pub_year"] == 2022
     test_mask = df["pub_year"] == 2023

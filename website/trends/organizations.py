@@ -1,4 +1,3 @@
-"""Extract company affiliations documented by an OpenAlex work."""
 
 import json
 

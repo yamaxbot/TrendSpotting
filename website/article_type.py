@@ -1,4 +1,3 @@
-"""Identify synthesis papers that should not anchor a technology trend."""
 
 import re
 
@@ -20,7 +19,6 @@ REVIEW_ABSTRACT = re.compile(
 
 
 def is_review_article(title, work_type=None, abstract=None):
-    """Exclude works that explicitly identify themselves as reviews."""
     if isinstance(work_type, str) and work_type.lower() == "review":
         return True
     return (

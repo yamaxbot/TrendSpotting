@@ -1,4 +1,3 @@
-"""Bounded-memory Parquet export and independent corpus validation."""
 from __future__ import annotations
 
 import collections
@@ -31,7 +30,6 @@ SCHEMA = pa.schema(
 
 
 def checkpoint_batches(config: dict) -> None:
-    """Persist complete 50k shards while collection is still running."""
     connection = database(config)
     directory = Path(config["data_dir"]) / "batches"
     directory.mkdir(exist_ok=True)

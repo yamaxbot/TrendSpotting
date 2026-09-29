@@ -27,19 +27,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 def _make_safe_filename(value: str) -> str:
-    """Преобразовать пользовательский запрос в безопасную часть имени файла."""
     filename = re.sub(r'[<>:"/\\|?*]+', "_", value.strip())
     filename = re.sub(r"\s+", "_", filename).strip("._")
     return filename[:100] or "query"
 
 
 def get_parsed_corpus_path(query: str) -> Path:
-    """Вернуть путь к корпусу, который создаёт on-demand парсер."""
     return WEBSITE_DIR / "data" / f"parse_corpus_{_make_safe_filename(query)}.parquet"
 
 
 def get_built_dataset_path(query: str) -> Path:
-    """Вернуть путь к итоговому датасету запроса."""
     return (
         WEBSITE_DIR
         / "data"
@@ -49,7 +46,6 @@ def get_built_dataset_path(query: str) -> Path:
 
 
 def model_dataset_is_ready(dataset_path: str | Path, corpus_path: str | Path) -> bool:
-    """Return whether model results can be reused while LLM text is repaired."""
     dataset_path = Path(dataset_path)
     corpus_path = Path(corpus_path)
     if not dataset_path.is_file() or not corpus_path.is_file():
@@ -154,7 +150,6 @@ def add_model_targets(
     query: str | None = None,
     budget=None,
 ) -> Path:
-    """Добавить предсказания CatBoost и сохранить 15 лучших результатов."""
     dataset_path = Path(dataset_path).resolve()
     if not dataset_path.is_file():
         raise FileNotFoundError(f"Датасет не найден: {dataset_path}")
@@ -295,7 +290,6 @@ def add_model_targets(
 
 
 def build_dataset_for_query(query: str, budget=None) -> Path:
-    """Собрать статьи по запросу и построить итоговый набор признаков."""
     from on_demand_parsing.parser import run_parser
 
     query = query.strip()
@@ -311,7 +305,6 @@ def build_dataset_for_query(query: str, budget=None) -> Path:
 
 
 def build_dataset_from_corpus(query: str, source_path: str | Path, budget=None) -> Path:
-    """Rebuild model results from an already collected OpenAlex corpus."""
     from preprocessing.create_features import build_real_features
 
     source_path = Path(source_path)

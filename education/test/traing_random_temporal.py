@@ -146,12 +146,6 @@ def print_split_stats(name, df):
 
 
 def split_random(df, X):
-    """
-    Random split только среди ML-примеров 2020-2023.
-
-    Стратификация сохраняет долю target=1 примерно одинаковой.
-    pub_year НЕ используется как признак и не влияет на split.
-    """
     ml = df["pub_year"].between(ML_START_YEAR, ML_END_YEAR)
     df_ml = df.loc[ml].copy()
     X_ml = X.loc[ml].copy()
@@ -202,14 +196,6 @@ def split_random(df, X):
 
 
 def split_temporal(df, X):
-    """
-    Temporal split:
-      train = 2020-2021
-      valid = 2022
-      test  = 2023
-
-    2017-2019 and 2024-2025 are not ML examples.
-    """
     train_mask = df["pub_year"].between(2020, 2021)
     valid_mask = df["pub_year"].eq(2022)
     test_mask = df["pub_year"].eq(2023)

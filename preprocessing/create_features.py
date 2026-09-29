@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 
 def parse_json_list(value: Any) -> list:
-    """Safely parse a JSON/list-like OpenAlex field."""
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -48,7 +47,6 @@ def parse_json_list(value: Any) -> list:
 
 
 def extract_author_ids(value: Any) -> list[str]:
-    """Extract OpenAlex author IDs from authorship data."""
     value = parse_json_list(value)
 
     if not value:
@@ -73,28 +71,15 @@ def extract_author_ids(value: Any) -> list[str]:
 
 
 def parse_counts_by_year(value: Any) -> list[dict]:
-    """Parse OpenAlex counts_by_year into dictionaries."""
     value = parse_json_list(value)
     return [item for item in value if isinstance(item, dict)]
 
 
 def safe_len_json_list(value: Any) -> int:
-    """Number of items in a JSON/list-like OpenAlex field."""
     return len(parse_json_list(value))
 
 
 def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
-    """
-    Historical emergence proxy.
-
-    Every paper in the same (topic, year) receives the same label.
-
-    A paper from year Y is positive when its topic has unusually high
-    publication growth during Y+1..Y+3 relative to Y-3..Y-1,
-    with a minimum future publication volume.
-
-    Future information is used ONLY for the label.
-    """
 
     logger.info("Calculating historical emergence target...")
 
@@ -189,13 +174,6 @@ def calculate_esi_target(df: pd.DataFrame) -> pd.Series:
 def calculate_topic_dynamics(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Historical topic-level publication dynamics.
-
-    These are deliberately separate from text geometry:
-    they describe how much the research community is publishing
-    around a topic and whether that activity is accelerating.
-    """
 
     logger.info("Calculating topic publication dynamics...")
 
@@ -259,11 +237,6 @@ def calculate_topic_dynamics(
 
 
 def calculate_author_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Historical author-community dynamics.
-
-    All values use only years before the paper's publication year.
-    """
 
     logger.info("Calculating author dynamics...")
 
@@ -335,31 +308,6 @@ def calculate_temporal_text_features(
     df: pd.DataFrame,
     text_matrix: scipy.sparse.csr_matrix,
 ) -> pd.DataFrame:
-    """
-    Multi-view historical text geometry.
-
-    For a paper from year Y, only papers from years < Y are used.
-
-    Returned views:
-      - novelty_raw:
-          1 - cosine similarity to historical topic centroid.
-      - topic_centroid_similarity:
-          same similarity, exposed explicitly for interpretability.
-      - cluster_density:
-          norm of historical topic centroid. This is a concentration
-          proxy, not simply "number of papers".
-      - topic_local_volume:
-          number of historical papers in the topic.
-      - nearest_topic_similarity:
-          similarity to the closest *other* historical topic centroid.
-      - cross_topic_gap:
-          difference between own-topic similarity and nearest-other-topic
-          similarity.
-
-    The last two features are intended to capture whether a paper sits
-    unusually close to another scientific territory, rather than merely
-    being far from its own center.
-    """
 
     logger.info("Calculating temporal text geometry...")
 
@@ -575,25 +523,6 @@ def calculate_temporal_text_features(
 def calculate_temporal_graph_features(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Historical topic-domain association features.
-
-    NOTE:
-    If the source has only one domain per paper, this is NOT a full
-    domain-domain interdisciplinary graph. We therefore expose several
-    different statistics rather than pretending one PPMI value is a
-    complete interdisciplinary representation.
-
-    Features:
-      - ppmi_domain_score:
-          historical association strength topic <-> domain.
-      - topic_domain_rarity:
-          inverse historical frequency of this exact pair.
-      - domain_history_count:
-          historical activity of the domain.
-      - topic_domain_first_seen_age:
-          how long this topic-domain connection has existed.
-    """
 
     logger.info("Calculating temporal topic-domain structure...")
 
@@ -686,13 +615,6 @@ def calculate_temporal_graph_features(
 
 
 def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Historical publication-source structure.
-
-    These features give the model a view different from text and
-    citations: whether a topic is concentrated in a few venues or
-    spreads across many sources.
-    """
 
     logger.info("Calculating historical source structure...")
 
@@ -769,12 +691,6 @@ def calculate_source_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Bibliographic-support features available at publication time.
-
-    These are not future citations. They describe the paper's own
-    reference structure.
-    """
 
     logger.info("Calculating bibliographic features...")
 
@@ -802,15 +718,6 @@ def calculate_reference_features(df: pd.DataFrame) -> pd.DataFrame:
 def calculate_historical_citation_features(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Historical citation information only.
-
-    For a paper published in Y:
-      velocity = cumulative cited_by counts through Y.
-      acceleration = log2((citations in Y + 1)/(citations in Y-1 + 1)).
-
-    No Y+1 or later citation data is used.
-    """
 
     logger.info("Calculating historical citation features...")
 

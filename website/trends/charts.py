@@ -1,4 +1,3 @@
-"""Presentation data for the publication timeline."""
 
 import math
 
@@ -14,7 +13,6 @@ def _axis_step(maximum):
 
 
 def publication_timeline(years):
-    """Return SVG coordinates for yearly counts, ordered chronologically."""
     ordered = sorted(years, key=lambda item: int(item["year"]))
     if not ordered:
         return {"points": [], "ticks": [], "line": ""}

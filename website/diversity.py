@@ -1,4 +1,3 @@
-"""Semantic diversification for the final ranked list of publications."""
 
 import numpy as np
 import pandas as pd
@@ -24,14 +23,6 @@ def select_diverse_top(
     limit: int = 15,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> tuple[list, list[float]]:
-    """Select the highest-ranked articles subject to a semantic similarity cap.
-
-    Candidates are considered in descending ``model_confidence`` order. An
-    article is accepted only when its cosine similarity to every already
-    selected article is at most ``similarity_threshold``. Consequently the
-    function may return fewer than ``limit`` rows instead of filling the result
-    with semantic duplicates.
-    """
     if limit <= 0 or ranked.empty:
         return [], []
     if not 0 <= similarity_threshold <= 1:

@@ -1,4 +1,3 @@
-"""Configuration, a budget-aware API client, and persistent state."""
 from __future__ import annotations
 
 import json
@@ -35,11 +34,10 @@ def api_key() -> str | None:
 
 
 class Paused(RuntimeError):
-    """Recoverable stop; restart the command to resume from saved state."""
+    pass
 
 
 class Client:
-    """Shared rate limiter; credentials and request URLs are never logged."""
 
     def __init__(self, rate: float = 5, max_requests: int = 9900):
         self.key = api_key()

@@ -1,4 +1,3 @@
-"""Broader OpenAlex publication counts, independent of strict source matching."""
 
 import re
 from collections import Counter
@@ -53,7 +52,6 @@ def _scope_to_chemistry(query, chemistry):
 
 
 def thematic_query(title, abstract):
-    """Choose an abstract-supported title phrase and retain its application area."""
     title_matches = list(WORDS.finditer(title or ""))
     title_words = [match.group() for match in title_matches]
     abstract_counts = Counter(_stem(word) for word in WORDS.findall(abstract or ""))
@@ -122,7 +120,6 @@ def thematic_query(title, abstract):
 
 
 def publication_counts(title, abstract, session=None):
-    """Use one OpenAlex aggregation, not a capped sample of matching works."""
     query = thematic_query(title, abstract)
     session = session or requests.Session()
     params = {

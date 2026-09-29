@@ -1,8 +1,3 @@
-"""Recover a small seed set when exact OpenAlex search finds no works.
-
-The recovered works still enter the existing topic-discovery and expansion
-pipeline. Broader retrieval is never treated as proof of relevance by itself.
-"""
 
 import math
 import re
@@ -36,7 +31,6 @@ def _terms(text):
 
 
 def query_variants(query):
-    """Drop trailing constraints gradually; leave the original query intact."""
     words = query.split()
     lengths = [len(words) - 1, math.ceil(len(words) * .75),
                math.ceil(len(words) * .5), 2, 1]
@@ -58,7 +52,6 @@ def matches_original_query(work, query):
 
 
 def recover_seed_works(query, years, search_fn, budget=None):
-    """Return original-query-matching seeds for the normal topic expansion."""
     recovered = {}
     attempts = [(query, False)]
     for variant in query_variants(query):

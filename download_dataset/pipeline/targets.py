@@ -1,4 +1,3 @@
-"""Population-level growth targets; no estimates from the stratified sample."""
 from __future__ import annotations
 
 import json
@@ -24,11 +23,6 @@ def topic_publications(connection, client: Client, topic: str, config: dict) -> 
 
 
 def new_authors(connection, client: Client, topic: str, end_year: int) -> dict[int, int]:
-    """First observed topic publication, using all available earlier years.
-
-    A fixed topic scan endpoint avoids treating authors present before t-2 as new.
-    Each cursor and its author updates are committed in the same transaction.
-    """
     state_key = f"{topic}:{end_year}"
     with connection:
         connection.execute("INSERT OR IGNORE INTO topic_cursor VALUES (?, '*', 0)", (state_key,))
@@ -116,11 +110,6 @@ def label(config: dict, client: Client) -> None:
 
 
 def historical_citations(client: Client, connection, doc_id: str, pub_year: int, cutoff: int) -> dict:
-    """Full publication-year bins of citing works, including years older than ten.
-
-    This reconstructs citations from the current graph, not a historical database snapshot.
-    Annual bins cannot resolve monthly windows.
-    """
     response = cached_get(connection, client, f"citations:{doc_id}:{cutoff}", "works",
                           filter=f"cites:{doc_id},publication_year:{pub_year}-{cutoff}",
                           group_by="publication_year", per_page=100)

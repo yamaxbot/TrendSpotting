@@ -73,7 +73,6 @@ def search_works_by_topic(topic_id, limit=1000, year=None, budget=None):
 
 
 def search_works_by_topic_with_count(topic_id, limit=1000, year=None, budget=None):
-    """Return a page-limited topic sample and the full OpenAlex match count."""
     works = []
     cursor = "*"
     total_count = 0

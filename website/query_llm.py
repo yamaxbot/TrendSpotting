@@ -114,7 +114,6 @@ def _is_none(value):
 
 
 def has_corrupt_text(value):
-    """Detect common truncation, encoding and token-splicing artifacts."""
     if not isinstance(value, str) or not value.strip():
         return True
     text = SCIENTIFIC_UNITS.sub("", value.strip())
@@ -171,7 +170,6 @@ def is_valid_weak_signal(value):
 
 
 def is_generic_weak_signal(value):
-    """Identify cached factor-only explanations that should be enriched."""
     return isinstance(value, str) and value.strip().startswith((
         "На оценку статьи положительно повлияли",
         "Ключевые факторы для этой статьи не выделены.",
@@ -179,7 +177,6 @@ def is_generic_weak_signal(value):
 
 
 def fallback_weak_signal(shap_values, *, summary=None, title=None):
-    """Keep a result article-specific even when no grounded signal was generated."""
     if isinstance(shap_values, str):
         try:
             shap_values = json.loads(shap_values)
@@ -200,7 +197,6 @@ def fallback_weak_signal(shap_values, *, summary=None, title=None):
 
 
 def clean_weak_signal(value):
-    """Remove the obsolete disclaimer from already cached explanations."""
     if not isinstance(value, str):
         return value
     return value.replace(
@@ -217,7 +213,6 @@ def _limit_sentences(text, maximum):
 
 
 def _clean_title(text):
-    """Remove response decoration without changing the translated title."""
     if _is_none(text):
         return "None"
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -273,7 +268,6 @@ def summarize_abstract(abstract_text):
 
 
 def _parse_article_analysis(content):
-    """Validate a compact, source-grounded response before caching it."""
     if not isinstance(content, str):
         raise ValueError("Article analysis is not text")
     content = content.strip()
@@ -302,7 +296,6 @@ def _parse_article_analysis(content):
 
 
 def analyze_articles_batch(articles, *, timeout=60):
-    """Generate independent card texts in one request, keyed by OpenAlex ID."""
     if not 2 <= len(articles) <= BATCH_ARTICLE_COUNT:
         raise ValueError("Invalid article batch size")
 
@@ -369,7 +362,6 @@ def analyze_articles_batch(articles, *, timeout=60):
 
 
 def recover_case_result(abstract_text, *, timeout=30):
-    """Retry only a missing case when the abstract describes a measured result."""
     if (
         not isinstance(abstract_text, str)
         or len(abstract_text.strip()) < 200
@@ -405,7 +397,6 @@ def recover_case_result(abstract_text, *, timeout=30):
 
 
 def analyze_abstract(abstract_text, shap_values=None):
-    """Create article fields and its own weak-signal explanation in one LLM call."""
     empty = dict.fromkeys(("summary", "problem", "advantage", "case_result", "weak_signal"), "None")
     if not isinstance(abstract_text, str) or not abstract_text.strip():
         return empty
@@ -439,7 +430,6 @@ def analyze_abstract(abstract_text, shap_values=None):
 
 
 def summarize_related_signal(anchor, related_articles):
-    """Return a source-grounded signal, or None when abstracts show no shared finding."""
     if (
         not isinstance(anchor.get("abstract_text"), str)
         or not anchor["abstract_text"].strip()

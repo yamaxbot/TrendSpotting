@@ -100,7 +100,6 @@ def _load_trends(
     generate_llm_texts: bool = False,
     budget=None,
 ) -> list[dict]:
-    """Объединить предсказания модели с исходными данными публикаций."""
     import pandas as pd
 
     predictions = pd.read_parquet(dataset_path)

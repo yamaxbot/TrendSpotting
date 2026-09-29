@@ -1,4 +1,3 @@
-"""Query-specific article relevance check before final diversification."""
 
 import hashlib
 import json
@@ -46,7 +45,6 @@ RELEVANCE_PROMPT = """Decide which scientific works are directly relevant to the
 
 
 def _matches_ion_direction(work: dict, normalized_query: str | None) -> bool:
-    """Require a named battery chemistry to be central, not a passing mention."""
     match = ION_DIRECTION.search(normalized_query or "")
     if not match:
         return True
@@ -141,11 +139,6 @@ def select_relevant_diverse_top(
     limit: int = 15,
     budget=None,
 ) -> tuple[list, list[float]]:
-    """Check ranked works in batches and refill until a diverse top is found.
-
-    The relevance decision is deliberately separate from the emergence score.
-    If no sufficiently relevant articles exist, return fewer than ``limit``.
-    """
     from website.diversity import select_diverse_top
 
     if ranked.empty or limit <= 0:

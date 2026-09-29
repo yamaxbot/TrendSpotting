@@ -1,8 +1,3 @@
-"""Single-worker background jobs for the local Django server.
-
-Job state is process-local; restarting the server interrupts unfinished work.
-Completed results remain in parquet files.
-"""
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
