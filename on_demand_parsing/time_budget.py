@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import time
 
 
-SEARCH_LIMIT_SECONDS = 25 * 60
+SEARCH_LIMIT_SECONDS = 30 * 60
 
 
 @dataclass

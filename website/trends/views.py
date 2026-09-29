@@ -249,7 +249,9 @@ def _load_trends(
                 analysis = batch_result.get("analysis")
                 if analysis is None:
                     try:
-                        analysis = analyze_abstract(abstract_text, row.get("shap_values"))
+                        analysis = analyze_abstract(
+                            abstract_text, row.get("shap_values"), budget=budget,
+                        )
                     except handled_errors:
                         analysis = dict.fromkeys(
                             ("summary", "problem", "advantage", "case_result", "weak_signal"),
@@ -325,19 +327,25 @@ def _load_trends(
                 stopped_early = True
                 break
 
-        if stopped_early:
+        candidate_count = len(predictions)
+        incomplete_count = candidate_count - len(completed_ids)
+        if incomplete_count:
             predictions = predictions[predictions["doc_id"].isin(completed_ids)].copy()
             rows = rows[rows["doc_id"].isin(completed_ids)].copy()
             if predictions.empty:
-                raise RuntimeError("Time limit reached before any complete article was available")
-        if budget:
-            partial_column = predictions.get("search_partial")
-            partial_result = bool(
-                budget.truncated or (partial_column is not None and partial_column.any())
+                raise RuntimeError("No complete articles were available after enrichment")
+            logger.warning(
+                "Article enrichment kept %s/%s complete cards; omitted %s incomplete cards",
+                len(predictions), candidate_count, incomplete_count,
             )
-            predictions["search_partial"] = partial_result
-            rows["search_partial"] = partial_result
-            checkpoint()
+        partial_column = predictions.get("search_partial")
+        partial_result = bool(
+            stopped_early or incomplete_count or (budget and budget.truncated)
+            or (partial_column is not None and partial_column.any())
+        )
+        predictions["search_partial"] = partial_result
+        rows["search_partial"] = partial_result
+        checkpoint()
 
     def display_value(value):
         if value is None or pd.isna(value) or value == "":

@@ -6,11 +6,11 @@ from on_demand_parsing.time_budget import SEARCH_LIMIT_SECONDS, SearchBudget
 
 
 class TimeBudgetTests(unittest.TestCase):
-    def test_limit_is_twenty_five_minutes(self):
-        self.assertEqual(SEARCH_LIMIT_SECONDS, 1500)
+    def test_limit_is_thirty_minutes(self):
+        self.assertEqual(SEARCH_LIMIT_SECONDS, 1800)
         with patch("on_demand_parsing.time_budget.time.monotonic", side_effect=[10, 11]):
             budget = SearchBudget.start()
-            self.assertEqual(budget.remaining(), 1499)
+            self.assertEqual(budget.remaining(), 1799)
 
     def test_openalex_returns_loaded_page_when_deadline_expires(self):
         class Response:

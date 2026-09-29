@@ -396,7 +396,7 @@ def recover_case_result(abstract_text, *, timeout=30):
     return "None"
 
 
-def analyze_abstract(abstract_text, shap_values=None):
+def analyze_abstract(abstract_text, shap_values=None, *, budget=None):
     empty = dict.fromkeys(("summary", "problem", "advantage", "case_result", "weak_signal"), "None")
     if not isinstance(abstract_text, str) or not abstract_text.strip():
         return empty
@@ -411,12 +411,15 @@ def analyze_abstract(abstract_text, shap_values=None):
         "positive_factors": [factor["фактор"] for factor in factors],
     }, ensure_ascii=False, separators=(",", ":"))
     for attempt in range(1, MAX_ARTICLE_ANALYSIS_ATTEMPTS + 1):
+        if budget and budget.expired():
+            break
         try:
             analysis = _parse_article_analysis(_query_llm(
                 ARTICLE_ANALYSIS_PROMPT,
                 content,
                 max_tokens=500,
                 temperature=0.0,
+                timeout=budget.request_timeout(30) if budget else 30,
             ))
             if not is_valid_description(analysis["summary"], abstract_text):
                 raise ValueError("Article analysis has no valid summary")

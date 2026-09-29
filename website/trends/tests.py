@@ -104,11 +104,53 @@ class WebsiteTests(SimpleTestCase):
         self.assertTrue(views._dataset_is_ready(self.dataset, self.corpus))
         response = self.client.get("/", {"q": "test"})
         self.assertTrue(response.context["partial"])
-        self.assertContains(response, "25 минут")
+        self.assertContains(response, "30 минут")
+
+    def test_failed_article_keeps_completed_cards_before_deadline(self):
+        from website import query_llm
+
+        corpus = pd.read_parquet(self.corpus)
+        second = corpus.iloc[0].copy()
+        second["doc_id"] = "W2"
+        pd.concat([corpus, second.to_frame().T], ignore_index=True).to_parquet(
+            self.corpus, index=False,
+        )
+
+        predictions = pd.read_parquet(self.dataset)
+        second_prediction = predictions.iloc[0].copy()
+        second_prediction["doc_id"] = "W2"
+        second_prediction["llm_description"] = None
+        second_prediction["llm_analysis_version"] = None
+        pd.concat(
+            [predictions, second_prediction.to_frame().T], ignore_index=True,
+        ).to_parquet(self.dataset, index=False)
+
+        failed_analysis = dict.fromkeys(
+            ("summary", "problem", "advantage", "case_result", "weak_signal"), "None",
+        )
+        budget = SearchBudget.start()
+        with patch.object(query_llm, "analyze_abstract", return_value=failed_analysis), \
+             patch.object(SearchBudget, "start", return_value=budget), \
+             patch.object(jobs, "_jobs", {}):
+            jobs._run("test")
+            self.assertEqual(jobs.status("test"), "complete")
+
+        saved = pd.read_parquet(self.dataset)
+        trends = views._load_trends(self.dataset, self.corpus)
+        self.assertEqual([trend["doc_id"] for trend in trends], ["W1"])
+        self.assertEqual(saved["doc_id"].tolist(), ["W1"])
+        self.assertTrue(saved["search_partial"].all())
+        self.assertFalse(budget.truncated)
+        self.assertTrue(views._dataset_is_ready(self.dataset, self.corpus))
+        with patch.object(jobs, "start") as start:
+            response = self.client.get("/", {"q": "test"})
+        self.assertTrue(response.context["partial"])
+        self.assertContains(response, "Показаны только готовые карточки.")
+        start.assert_not_called()
 
     def test_information_pages_are_reachable_from_navigation(self):
         home = self.client.get('/')
-        self.assertContains(home, 'Загрузка может занять до 25 минут.')
+        self.assertContains(home, 'Загрузка может занять до 30 минут.')
         self.assertContains(home, 'href="/how-it-works/"')
         self.assertContains(home, 'href="/about/"')
         how = self.client.get('/how-it-works/')
@@ -504,6 +546,17 @@ class WebsiteTests(SimpleTestCase):
             result = query_llm.analyze_abstract('A sensor abstract.')
         self.assertEqual(request.call_count, 3)
         self.assertEqual(result['summary'], 'Sensor measures glucose.')
+
+    def test_article_analysis_respects_expired_search_budget(self):
+        from website import query_llm
+
+        with patch.object(query_llm, "_query_llm") as request:
+            result = query_llm.analyze_abstract(
+                "A sensor abstract.", budget=SearchBudget(deadline=0),
+            )
+
+        request.assert_not_called()
+        self.assertEqual(result["summary"], "None")
 
     def test_missing_case_result_is_recovered_without_rewriting_other_fields(self):
         from website import query_llm
