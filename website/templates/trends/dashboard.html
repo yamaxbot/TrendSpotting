@@ -15,7 +15,7 @@
     <span class="loading-spinner" aria-hidden="true"></span>
     <div class="loading-copy">
       <strong>Идёт поиск статей</strong>
-      <span>Загрузка может занять до 20 минут.</span>
+      <span>Загрузка может занять до 25 минут.</span>
     </div>
   </div>
 </div>
@@ -23,7 +23,7 @@
 {% if pending %}<noscript><p>Поиск запущен. Включите JavaScript для автоматического обновления или обновите страницу позже.</p></noscript>{% endif %}
 {% if query and not pending and not error %}
 <section class="results-section" id="results">
-  {% if partial %}<p>Поиск остановлен по лимиту 19 мин 30 сек. Показаны результаты по данным, собранным к этому моменту.</p>{% endif %}
+  {% if partial %}<p>Поиск остановлен по лимиту 25 минут. Показаны результаты по данным, собранным к этому моменту.</p>{% endif %}
   <div class="section-heading"><div><div class="eyebrow">Результаты поиска</div><h2>Сигналы по запросу «{{ query }}»</h2></div></div>
   <div class="metrics"><div><strong>{{ publication_count }}</strong><span>релевантных публикаций</span></div></div>
   {% if error %}<p>{{ error }}</p>{% endif %}

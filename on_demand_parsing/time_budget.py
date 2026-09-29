@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import time
 
 
-SEARCH_LIMIT_SECONDS = 19 * 60 + 30
+SEARCH_LIMIT_SECONDS = 25 * 60
 
 
 @dataclass

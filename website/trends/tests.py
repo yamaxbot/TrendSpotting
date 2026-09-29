@@ -104,10 +104,11 @@ class WebsiteTests(SimpleTestCase):
         self.assertTrue(views._dataset_is_ready(self.dataset, self.corpus))
         response = self.client.get("/", {"q": "test"})
         self.assertTrue(response.context["partial"])
-        self.assertContains(response, "19 мин 30 сек")
+        self.assertContains(response, "25 минут")
 
     def test_information_pages_are_reachable_from_navigation(self):
         home = self.client.get('/')
+        self.assertContains(home, 'Загрузка может занять до 25 минут.')
         self.assertContains(home, 'href="/how-it-works/"')
         self.assertContains(home, 'href="/about/"')
         how = self.client.get('/how-it-works/')
